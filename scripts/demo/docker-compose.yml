@@ -1,0 +1,224 @@
+# Four-node Clique PoA demo
+#
+# Topology:
+#   geth-{1,2,3,4}    – execution clients (Geth), connected to each other via devp2p
+#   clique-{1,2,3}    – consensus clients with signer keys (block producers)
+#   clique-4          – consensus client without a key (observer / follower)
+#
+# Run `./setup.sh` rather than `docker compose up` directly — setup.sh
+# generates keys, initialises the Geth data directories, and then starts
+# this file.
+
+services:
+
+  # ── Execution clients ────────────────────────────────────────────────────────
+
+  geth-1:
+    image: ethereum/client-go:latest
+    restart: unless-stopped
+    volumes:
+      - ./generated:/generated:ro
+      - ./data/geth-1:/data
+    command:
+      - --datadir=/data
+      - --networkid=12345
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/generated/jwt-1.hex
+      - --authrpc.vhosts=*
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.api=eth,net,web3,txpool,debug
+      - --http.vhosts=*
+      - --http.corsdomain=*
+      - --nodiscover
+      - --syncmode=full
+      - --gcmode=archive
+      - --verbosity=3
+    networks:
+      - demo
+    ports:
+      - "8545:8545"   # JSON-RPC — connect MetaMask / cast here
+      - "8551:8551"   # Engine API (internal use, exposed for debugging)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' http://localhost:8545 | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  geth-2:
+    image: ethereum/client-go:latest
+    restart: unless-stopped
+    volumes:
+      - ./generated:/generated:ro
+      - ./data/geth-2:/data
+    command:
+      - --datadir=/data
+      - --networkid=12345
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/generated/jwt-2.hex
+      - --authrpc.vhosts=*
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.api=eth,net,web3,txpool
+      - --http.vhosts=*
+      - --http.corsdomain=*
+      - --nodiscover
+      - --syncmode=full
+      - --gcmode=archive
+      - --verbosity=3
+    networks:
+      - demo
+    ports:
+      - "8546:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' http://localhost:8545 | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  geth-3:
+    image: ethereum/client-go:latest
+    restart: unless-stopped
+    volumes:
+      - ./generated:/generated:ro
+      - ./data/geth-3:/data
+    command:
+      - --datadir=/data
+      - --networkid=12345
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/generated/jwt-3.hex
+      - --authrpc.vhosts=*
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.api=eth,net,web3,txpool
+      - --http.vhosts=*
+      - --http.corsdomain=*
+      - --nodiscover
+      - --syncmode=full
+      - --gcmode=archive
+      - --verbosity=3
+    networks:
+      - demo
+    ports:
+      - "8547:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' http://localhost:8545 | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  geth-4:
+    image: ethereum/client-go:latest
+    restart: unless-stopped
+    volumes:
+      - ./generated:/generated:ro
+      - ./data/geth-4:/data
+    command:
+      - --datadir=/data
+      - --networkid=12345
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/generated/jwt-4.hex
+      - --authrpc.vhosts=*
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.api=eth,net,web3,txpool
+      - --http.vhosts=*
+      - --http.corsdomain=*
+      - --nodiscover
+      - --syncmode=full
+      - --gcmode=archive
+      - --verbosity=3
+    networks:
+      - demo
+    ports:
+      - "8548:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' http://localhost:8545 | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ── Consensus clients ────────────────────────────────────────────────────────
+
+  clique-1:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: clique-node:demo
+    restart: unless-stopped
+    depends_on:
+      geth-1:
+        condition: service_healthy
+    volumes:
+      - ./generated:/generated:ro
+    command:
+      - --config=/generated/config/clique-1.toml
+    networks:
+      - demo
+    ports:
+      - "5052:5052"   # RPC API — primary query endpoint
+      - "9001:9000"   # libp2p P2P
+
+  clique-2:
+    image: clique-node:demo
+    restart: unless-stopped
+    depends_on:
+      geth-2:
+        condition: service_healthy
+    volumes:
+      - ./generated:/generated:ro
+    command:
+      - --config=/generated/config/clique-2.toml
+    networks:
+      - demo
+    ports:
+      - "5053:5052"
+      - "9002:9000"
+
+  clique-3:
+    image: clique-node:demo
+    restart: unless-stopped
+    depends_on:
+      geth-3:
+        condition: service_healthy
+    volumes:
+      - ./generated:/generated:ro
+    command:
+      - --config=/generated/config/clique-3.toml
+    networks:
+      - demo
+    ports:
+      - "5054:5052"
+      - "9003:9000"
+
+  clique-4:
+    image: clique-node:demo
+    restart: unless-stopped
+    depends_on:
+      geth-4:
+        condition: service_healthy
+    volumes:
+      - ./generated:/generated:ro
+    command:
+      - --config=/generated/config/clique-4.toml
+    networks:
+      - demo
+    ports:
+      - "5055:5052"   # observer RPC API
+      - "9004:9000"
+
+networks:
+  demo:
+    driver: bridge

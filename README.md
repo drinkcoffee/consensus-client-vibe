@@ -115,6 +115,8 @@ The following endpoints are available. See [docs/RPC.md](docs/RPC.md) for full r
 | [docs/Engine.md](docs/Engine.md) | Engine API integration and JWT authentication |
 | [docs/P2P.md](docs/P2P.md) | P2P wire formats, Gossipsub, and status handshake |
 | [docs/RPC.md](docs/RPC.md) | JSON-RPC API endpoints with request/response schemas |
+| [docs/Docker.md](docs/Docker.md) | Building and running the node as a Docker container |
+| [scripts/demo/README.md](scripts/demo/README.md) | Four-node local demo: three signers + one observer, full setup instructions |
 
 ## Implementation Status
 

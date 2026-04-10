@@ -10,6 +10,8 @@ Technical reference for `consensus-client-vibe`, a Clique Proof-of-Authority Eth
 | [Engine.md](Engine.md) | Engine API integration: JWT authentication, all JSON-RPC methods, call sequences, and error handling |
 | [P2P.md](P2P.md) | P2P networking: wire message formats, transport stack, Gossipsub topic, status handshake protocol, and peer discovery |
 | [RPC.md](RPC.md) | JSON-RPC HTTP API: all endpoints with request parameters, response schemas, and example payloads |
+| [Docker.md](Docker.md) | Building and running the node as a Docker container, including Docker Compose setup |
+| [../scripts/demo/README.md](../scripts/demo/README.md) | Four-node Clique PoA demo with three signers and one observer |
 
 ## Quick Links
 
@@ -20,3 +22,7 @@ Technical reference for `consensus-client-vibe`, a Clique Proof-of-Authority Eth
 **I want to understand how nodes find and communicate with each other** → [P2P.md](P2P.md)
 
 **I want to query or control a running node** → [RPC.md](RPC.md)
+
+**I want to run the node in Docker** → [Docker.md](Docker.md)
+
+**I want to run a local demo network** → [scripts/demo/README.md](../scripts/demo/README.md)
