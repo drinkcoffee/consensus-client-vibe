@@ -66,6 +66,7 @@ Key settings:
 | `[node]` | `network_id` | Must match your execution client's chain/network ID |
 | `[engine]` | `url` | Engine API endpoint of your execution client (default `:8551`) |
 | `[engine]` | `jwt_secret_path` | Path to the shared JWT secret file (hex-encoded) |
+| `[engine]` | `el_rpc_url` | Regular JSON-RPC endpoint used to fetch the genesis block on startup (default `http://localhost:8545`) |
 | `[clique]` | `signer_key_path` | ECDSA private key for signing blocks; omit for follower mode |
 | `[clique]` | `period` | Seconds between blocks — must match `genesis.config.clique.period` |
 | `[clique]` | `epoch` | Blocks per epoch — must match `genesis.config.clique.epoch` |
@@ -125,18 +126,16 @@ The following endpoints are available. See [docs/RPC.md](docs/RPC.md) for full r
 | 4 | Fork choice (heaviest-chain rule, reorg detection) | Complete |
 | 5 | P2P networking (libp2p, Gossipsub, peer discovery) | Complete |
 | 6 | JSON-RPC API server | Complete |
-| 7 | Block production (turn detection, payload building, broadcast) | Planned |
+| 7 | Block production (turn detection, payload building, broadcast) | Complete |
 
 See [plan.md](plan.md) for the full implementation plan.
 
 ## Current Limitations
 
-- **Not yet wired together.** All subsystems are implemented and tested individually but the top-level node orchestrator (Phase 7) that connects them has not been written. The binary starts and shuts down cleanly but does not yet connect to an execution client or participate in consensus.
-- **No block production.** Turn detection, payload building, and block sealing are planned for Phase 7.
 - **No sync.** There is no mechanism to sync chain history from peers. The node needs to start from a trusted checkpoint or a freshly initialised execution client.
 - **No slashing protection.** Equivocation detection (signing two different blocks at the same height) is not implemented.
 - **Clique only.** This client is purpose-built for Clique PoA and is not compatible with Ethereum mainnet (Proof-of-Stake / Gasper).
-- **No MEV / builder API.** Block production will use the standard `engine_getPayload` flow; the builder API (mev-boost) is out of scope.
+- **No MEV / builder API.** Block production uses the standard `engine_getPayload` flow; the builder API (mev-boost) is out of scope.
 
 ## Project Layout
 
@@ -148,7 +147,7 @@ internal/clique/        # Clique EIP-225 consensus engine
 internal/engine/        # Engine API client (JWT auth, newPayload, FCU, getPayload)
 internal/p2p/           # libp2p networking, Gossipsub, status handshake
 internal/forkchoice/    # Heaviest-chain fork choice store
-internal/node/          # Top-level node orchestrator (Phase 7 — planned)
+internal/node/          # Top-level node orchestrator (block processing + production)
 internal/rpc/           # JSON-RPC HTTP server
 docs/                   # Technical documentation
 config.example.toml     # Annotated example configuration

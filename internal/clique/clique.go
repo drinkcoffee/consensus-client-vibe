@@ -52,6 +52,30 @@ var (
 	nonceNull = types.BlockNonce{} // all-zero nonce
 )
 
+// Exported constants for use by the node orchestrator.
+const (
+	// ExtraVanity is the fixed number of extra-data prefix bytes reserved for
+	// signer vanity in every Clique block header.
+	ExtraVanity = extraVanity
+	// ExtraSeal is the fixed number of extra-data suffix bytes reserved for the
+	// signer's ECDSA seal in every Clique block header.
+	ExtraSeal = extraSeal
+	// DiffInTurn is the block difficulty used when the signer is in-turn.
+	DiffInTurn = diffInTurn
+	// DiffNoTurn is the block difficulty used when the signer is out-of-turn.
+	DiffNoTurn = diffNoTurn
+)
+
+// Exported sentinel values for the node orchestrator. Treat as read-only.
+var (
+	// EmptyUncleHash is the required UncleHash for all Clique blocks.
+	EmptyUncleHash = emptyUncleHash
+	// NonceAuth is the BlockNonce value encoding an "authorize" vote.
+	NonceAuth = nonceAuth
+	// NonceDrop is the BlockNonce value encoding a "remove" vote (also used as the no-vote value).
+	NonceDrop = nonceNull
+)
+
 // Sentinel errors returned by the Clique engine.
 var (
 	ErrUnauthorizedSigner = errors.New("unauthorized signer")

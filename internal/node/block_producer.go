@@ -1,0 +1,313 @@
+package node
+
+import (
+	"context"
+	"math/big"
+	"math/rand"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
+
+	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
+	p2phost "github.com/peterrobinson/consensus-client-vibe/internal/p2p"
+)
+
+const wiggle = 500 * time.Millisecond // per-slot extra delay for out-of-turn signers
+
+// scheduleBlockProduction resets the production timer based on the current
+// head. It is called after every head change (from P2P or from production).
+// It is a no-op in follower mode (no signer key) or if we are not in the
+// current authorized signer set.
+func (n *Node) scheduleBlockProduction(ctx context.Context) {
+	if n.signerKey == nil {
+		return
+	}
+
+	snap := n.headSnapshot()
+	if snap == nil {
+		return
+	}
+	head := n.stor.Head()
+	if head == nil {
+		return
+	}
+
+	// Check we are authorized.
+	if !snap.IsAuthorized(n.signerAddr) {
+		n.log.Debug().Msg("not in current signer set, skipping production")
+		return
+	}
+
+	signers := snap.SignerList()
+	nextNum := head.Number.Uint64() + 1
+	inTurnIdx := int(nextNum % uint64(len(signers)))
+
+	// Find our index in the signer list.
+	ourIdx := -1
+	for i, s := range signers {
+		if s == n.signerAddr {
+			ourIdx = i
+			break
+		}
+	}
+	if ourIdx < 0 {
+		return // shouldn't happen since IsAuthorized passed
+	}
+
+	// Compute distance from in-turn position (positive, wrapping).
+	dist := ourIdx - inTurnIdx
+	if dist < 0 {
+		dist += len(signers)
+	}
+
+	// Base firing time: parent.Time + period.
+	baseTime := time.Unix(int64(head.Time), 0).Add(
+		time.Duration(n.cfg.Clique.Period) * time.Second)
+
+	var delay time.Duration
+	if dist == 0 {
+		// In-turn: fire exactly at baseTime.
+		delay = time.Until(baseTime)
+	} else {
+		// Out-of-turn: back off by dist×wiggle + a random jitter up to wiggle.
+		//nolint:gosec // non-crypto random is fine for block timing
+		jitter := time.Duration(rand.Int63n(int64(wiggle)))
+		delay = time.Until(baseTime) + time.Duration(dist)*wiggle + jitter
+	}
+	if delay < 0 {
+		delay = 0
+	}
+
+	n.log.Debug().
+		Uint64("next_block", nextNum).
+		Int("our_idx", ourIdx).
+		Int("inturn_idx", inTurnIdx).
+		Dur("delay", delay).
+		Msg("scheduling block production")
+
+	// Cancel any previous timer and start a fresh one.
+	prodCtx, cancel := context.WithCancel(ctx)
+
+	n.prodMu.Lock()
+	if n.prodTimer != nil {
+		n.prodTimer.cancel()
+	}
+	n.prodTimer = &timerCancel{cancel: cancel}
+	n.prodMu.Unlock()
+
+	go func() {
+		select {
+		case <-time.After(delay):
+			n.produceBlock(prodCtx)
+		case <-prodCtx.Done():
+		}
+	}()
+}
+
+// produceBlock executes the full block-production pipeline when it is this
+// node's turn (or close enough to it after accounting for timing skew):
+//
+//  1. Sanity-check the signer is still authorized and hasn't signed too recently.
+//  2. Request a payload from the EL (engine_forkchoiceUpdated with payloadAttributes).
+//  3. Fetch the completed payload (engine_getPayload).
+//  4. Build the Clique header from the execution payload fields.
+//  5. Seal the header with the signer key.
+//  6. Broadcast the block to peers via Gossipsub.
+//  7. Import the payload into the local EL (engine_newPayload).
+//  8. Update the local fork choice (engine_forkchoiceUpdated).
+//  9. Advance the in-memory head and reschedule for the next slot.
+func (n *Node) produceBlock(ctx context.Context) {
+	snap := n.headSnapshot()
+	if snap == nil {
+		return
+	}
+	head := n.stor.Head()
+	if head == nil {
+		return
+	}
+
+	nextNum := head.Number.Uint64() + 1
+
+	// Guard: still authorized?
+	if !snap.IsAuthorized(n.signerAddr) {
+		n.log.Debug().Msg("produceBlock: no longer authorized")
+		return
+	}
+	// Guard: signed too recently?
+	if snap.HasRecentlySigned(nextNum, n.signerAddr) {
+		n.log.Debug().Msg("produceBlock: signed recently, skipping")
+		return
+	}
+
+	targetTime := head.Time + n.cfg.Clique.Period
+	// Don't produce significantly before the target time.
+	if uint64(time.Now().Unix())+1 < targetTime {
+		n.log.Debug().
+			Uint64("target", targetTime).
+			Int64("now", time.Now().Unix()).
+			Msg("produceBlock: too early, rescheduling")
+		n.scheduleBlockProduction(ctx)
+		return
+	}
+
+	n.log.Info().Uint64("number", nextNum).Msg("producing block")
+
+	// Step 2: Request payload from EL.
+	unsignedExtra := n.buildExtra(snap, nextNum)
+	zeroHash := common.Hash{}
+	attrs := &engine.PayloadAttributesV3{
+		Timestamp:             hexutil.Uint64(targetTime),
+		PrevRandao:            common.Hash{},
+		SuggestedFeeRecipient: n.signerAddr,
+		Withdrawals:           []*engine.Withdrawal{},
+		ParentBeaconBlockRoot: &zeroHash, //nolint:gosec
+		ExtraData:             unsignedExtra,
+	}
+	state := n.stor.ForkchoiceState()
+	fcuResult, err := n.eng.ForkchoiceUpdatedV3(ctx, state, attrs)
+	if err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: ForkchoiceUpdatedV3 (start) failed")
+		return
+	}
+	if fcuResult.PayloadStatus.Status != engine.PayloadStatusValid {
+		n.log.Error().Str("status", fcuResult.PayloadStatus.Status).
+			Msg("produceBlock: FCU returned non-VALID status")
+		return
+	}
+	if fcuResult.PayloadID == nil {
+		n.log.Error().Msg("produceBlock: no payloadId returned")
+		return
+	}
+
+	// Step 3: Fetch the built payload.
+	payloadResp, err := n.eng.GetPayloadV3(ctx, *fcuResult.PayloadID)
+	if err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: GetPayloadV3 failed")
+		return
+	}
+	ep := payloadResp.ExecutionPayload
+
+	// Step 4: Build Clique header from the execution payload fields.
+	// We use our own extra data (which includes the Clique vanity / epoch
+	// signer list + 65 zero bytes for the seal) rather than whatever the EL
+	// put in its version of the block's extra data.
+	var baseFee *big.Int
+	if ep.BaseFeePerGas != nil {
+		baseFee = ep.BaseFeePerGas.ToInt()
+	}
+	nonce := cliqueeng.NonceDrop
+	coinbase := n.signerAddr
+
+	// Apply pending vote if one was set via POST /clique/v1/vote.
+	if n.rpc != nil {
+		if vote := n.rpc.PendingVote(); vote != nil {
+			coinbase = vote.Address
+			if vote.Authorize {
+				nonce = cliqueeng.NonceAuth
+			}
+		}
+	}
+
+	header := &types.Header{
+		ParentHash: head.Hash(),
+		UncleHash:  cliqueeng.EmptyUncleHash,
+		Coinbase:   coinbase,
+		Root:       ep.StateRoot,
+		ReceiptHash: ep.ReceiptsRoot,
+		Bloom:      types.BytesToBloom(ep.LogsBloom),
+		Difficulty:  n.cliq.CalcDifficulty(snap, nextNum, n.signerAddr),
+		Number:      new(big.Int).SetUint64(nextNum),
+		GasLimit:    uint64(ep.GasLimit),
+		GasUsed:     uint64(ep.GasUsed),
+		Time:        uint64(ep.Timestamp),
+		Extra:       unsignedExtra,
+		MixDigest:   common.Hash{},
+		Nonce:       nonce,
+		BaseFee:     baseFee,
+	}
+
+	// Step 5: Seal the header (writes 65-byte ECDSA signature into Extra).
+	if err := cliqueeng.SealHeader(header, n.signerKey); err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: SealHeader failed")
+		return
+	}
+
+	// Update the execution payload's extra data and block hash to match the
+	// now-signed Clique header (the signature changes both).
+	ep.ExtraData = header.Extra
+	ep.BlockHash = header.Hash()
+
+	// Step 6: Broadcast to peers.
+	blk, err := p2phost.NewCliqueBlock(header, header.Hash())
+	if err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: NewCliqueBlock failed")
+		return
+	}
+	if n.p2p != nil {
+		if err := n.p2p.BroadcastBlock(ctx, blk); err != nil {
+			n.log.Warn().Err(err).Msg("produceBlock: BroadcastBlock failed")
+		}
+	}
+
+	// Step 7: Import into local EL.
+	if err := n.importPayload(ctx, ep); err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: importPayload failed")
+		return
+	}
+
+	// Step 8: Add to store, update fork choice.
+	headChanged, err := n.stor.AddBlock(header)
+	if err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: AddBlock failed")
+		return
+	}
+	if headChanged {
+		newState := n.stor.ForkchoiceState()
+		if _, err := n.eng.ForkchoiceUpdatedV3(ctx, newState, nil); err != nil {
+			n.log.Error().Err(err).Msg("produceBlock: ForkchoiceUpdatedV3 (new head) failed")
+		}
+	}
+
+	// Step 9: Advance snapshot and reschedule.
+	newSnap, err := n.cliq.Apply(snap, []*types.Header{header})
+	if err != nil {
+		n.log.Error().Err(err).Msg("produceBlock: Apply snapshot failed")
+	} else {
+		n.setHeadSnapshot(newSnap)
+	}
+
+	blockHash := header.Hash()
+	if n.p2p != nil {
+		n.p2p.SetStatus(p2phost.StatusMsg{
+			NetworkID:   n.cfg.Node.NetworkID,
+			GenesisHash: n.genesisSnap.Hash,
+			HeadHash:    blockHash,
+			HeadNumber:  nextNum,
+		})
+	}
+
+	n.log.Info().
+		Uint64("number", nextNum).
+		Str("hash", blockHash.Hex()).
+		Str("signer", n.signerAddr.Hex()).
+		Msg("block produced and imported")
+
+	n.scheduleBlockProduction(ctx)
+}
+
+// buildExtra constructs the Extra field for the next Clique block.
+// At epoch boundaries, the signer list is embedded after the vanity bytes.
+// The last ExtraSeal bytes are zero-padded (to be filled in by SealHeader).
+func (n *Node) buildExtra(snap *cliqueeng.Snapshot, nextNum uint64) []byte {
+	extra := make([]byte, cliqueeng.ExtraVanity) // 32 zero vanity bytes
+	if nextNum%n.cfg.Clique.Epoch == 0 {
+		for _, addr := range snap.SignerList() {
+			extra = append(extra, addr.Bytes()...)
+		}
+	}
+	extra = append(extra, make([]byte, cliqueeng.ExtraSeal)...) // 65 zero seal bytes
+	return extra
+}

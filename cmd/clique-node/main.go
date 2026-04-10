@@ -10,6 +10,7 @@ import (
 
 	"github.com/peterrobinson/consensus-client-vibe/internal/config"
 	"github.com/peterrobinson/consensus-client-vibe/internal/log"
+	"github.com/peterrobinson/consensus-client-vibe/internal/node"
 	"github.com/urfave/cli/v2"
 )
 
@@ -95,14 +96,9 @@ func runNode(cliCtx *cli.Context) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// TODO(phase-2+): construct and start the node here.
-	// node, err := node.New(cfg)
-	// if err != nil { return err }
-	// return node.Run(ctx)
-
-	// Placeholder: just block until signal.
-	logger.Info().Msg("Node initialised (subsystems not yet wired — see plan.md)")
-	<-ctx.Done()
-	logger.Info().Msg("Shutdown signal received, stopping")
-	return nil
+	n, err := node.New(cfg)
+	if err != nil {
+		return fmt.Errorf("init node: %w", err)
+	}
+	return n.Start(ctx)
 }

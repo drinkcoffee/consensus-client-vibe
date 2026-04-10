@@ -73,6 +73,16 @@ func NewGenesisSnapshot(genesis *types.Header) (*Snapshot, error) {
 	return newSnapshot(genesis.Number.Uint64(), genesis.Hash(), signers), nil
 }
 
+// NewCheckpointSnapshot creates a Snapshot from an epoch checkpoint block header.
+// The checkpoint block's extra data must contain the authorized signer list in the
+// same format as the genesis block (32-byte vanity + N×20 signers + 65-byte seal).
+//
+// This is identical in logic to NewGenesisSnapshot but is provided as a named
+// function to make its intent clear when called on non-genesis epoch blocks.
+func NewCheckpointSnapshot(header *types.Header) (*Snapshot, error) {
+	return NewGenesisSnapshot(header)
+}
+
 // copy returns a deep copy of s so that apply can be called without mutating s.
 func (s *Snapshot) copy() *Snapshot {
 	cpy := &Snapshot{

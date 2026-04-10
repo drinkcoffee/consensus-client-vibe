@@ -71,6 +71,11 @@ type PayloadAttributesV3 struct {
 	// ParentBeaconBlockRoot is the beacon block root of the parent block.
 	// For Clique networks this can be set to the zero hash.
 	ParentBeaconBlockRoot *common.Hash `json:"parentBeaconBlockRoot"`
+	// ExtraData is non-standard; some Clique-mode execution clients accept it
+	// to allow the consensus layer to control the block's extra-data field
+	// (needed for the Clique vanity, signer-list checkpoints, and seal).
+	// Omitted when nil/empty.
+	ExtraData hexutil.Bytes `json:"extraData,omitempty"`
 }
 
 // Withdrawal represents an EIP-4895 validator withdrawal.

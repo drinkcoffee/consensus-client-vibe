@@ -32,6 +32,9 @@ type EngineConfig struct {
 	URL string `toml:"url"`
 	// JWTSecretPath is the path to the hex-encoded JWT shared secret file.
 	JWTSecretPath string `toml:"jwt_secret_path"`
+	// ELRPCUrl is the standard JSON-RPC endpoint of the execution client (no JWT auth),
+	// used to fetch the genesis block on startup. Defaults to http://localhost:8545.
+	ELRPCUrl string `toml:"el_rpc_url"`
 	// DialTimeout is how long to wait when connecting to the execution client.
 	DialTimeout duration `toml:"dial_timeout"`
 	// CallTimeout is the per-call timeout for Engine API requests.
@@ -103,6 +106,7 @@ func DefaultConfig() *Config {
 		Engine: EngineConfig{
 			URL:           "http://localhost:8551",
 			JWTSecretPath: "./jwt.hex",
+			ELRPCUrl:      "http://localhost:8545",
 			DialTimeout:   duration{10 * time.Second},
 			CallTimeout:   duration{5 * time.Second},
 		},
