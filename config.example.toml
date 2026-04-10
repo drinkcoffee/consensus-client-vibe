@@ -1,0 +1,53 @@
+# clique-node example configuration
+# Copy to config.toml and adjust for your environment.
+
+[node]
+# Directory for persistent node data (peer store, snapshots).
+data_dir = "./data"
+# Must match the chainId / networkId in your execution client's genesis.
+network_id = 12345
+
+[engine]
+# Authenticated Engine API endpoint of the execution client.
+url = "http://localhost:8551"
+# Path to the shared JWT secret (hex-encoded, with or without 0x prefix).
+jwt_secret_path = "./jwt.hex"
+# Timeout when establishing the connection to the execution client.
+dial_timeout = "10s"
+# Per-call timeout for Engine API requests.
+call_timeout = "5s"
+
+[p2p]
+# libp2p multiaddr to listen on for incoming peer connections.
+listen_addr = "/ip4/0.0.0.0/tcp/9000"
+# Initial peers to connect to (multiaddrs).
+boot_nodes = [
+  # "/ip4/1.2.3.4/tcp/9000/p2p/12D3KooW..."
+]
+# Maximum number of simultaneously connected peers.
+max_peers = 50
+# Enable mDNS discovery — useful for local testing, disable in production.
+enable_mdns = true
+
+[rpc]
+# Address and port for the JSON-RPC HTTP server.
+listen_addr = "0.0.0.0:5052"
+read_timeout  = "10s"
+write_timeout = "10s"
+
+[clique]
+# Path to the hex-encoded ECDSA private key used to sign blocks.
+# Omit or leave empty to run in follower (non-signing) mode.
+signer_key_path = "./signer.hex"
+# Minimum seconds between blocks — must match genesis.config.clique.period.
+period = 15
+# Blocks per epoch (vote reset + signer checkpoint) — must match genesis.config.clique.epoch.
+epoch = 30000
+# Expected genesis block hash (hex, 0x-prefixed). Node will refuse to start if mismatched.
+genesis_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+[logging]
+# Log verbosity: trace | debug | info | warn | error
+level  = "info"
+# Output format: json | pretty
+format = "pretty"
