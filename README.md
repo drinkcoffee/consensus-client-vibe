@@ -90,9 +90,9 @@ Key settings:
 
 The node reads its config on startup, falls back to defaults if no config file is found, and shuts down cleanly on `SIGINT` / `SIGTERM`.
 
-## JSON-RPC API (planned)
+## JSON-RPC API
 
-Once fully implemented, the following endpoints will be available:
+The following endpoints are available. See [docs/RPC.md](docs/RPC.md) for full request/response documentation.
 
 | Endpoint | Description |
 |---|---|
@@ -106,24 +106,34 @@ Once fully implemented, the following endpoints will be available:
 | `GET /clique/v1/votes` | Pending votes in the current epoch |
 | `POST /clique/v1/vote` | Cast a vote to add or remove a signer |
 
+## Documentation
+
+| Document | Description |
+|---|---|
+| [docs/Architecture.md](docs/Architecture.md) | System design, component descriptions, and data flow |
+| [docs/Engine.md](docs/Engine.md) | Engine API integration and JWT authentication |
+| [docs/P2P.md](docs/P2P.md) | P2P wire formats, Gossipsub, and status handshake |
+| [docs/RPC.md](docs/RPC.md) | JSON-RPC API endpoints with request/response schemas |
+
 ## Implementation Status
 
 | Phase | Description | Status |
 |---|---|---|
 | 1 | Foundation: config, logging, CLI entrypoint | Complete |
-| 2 | Engine API client (newPayload, FCU, getPayload, JWT auth) | Planned |
-| 3 | Clique consensus engine (EIP-225: signing, verification, snapshots) | Planned |
-| 4 | Fork choice (heaviest-chain rule, reorg detection) | Planned |
-| 5 | P2P networking (libp2p, Gossipsub, peer discovery) | Planned |
-| 6 | JSON-RPC API server | Planned |
+| 2 | Engine API client (newPayload, FCU, getPayload, JWT auth) | Complete |
+| 3 | Clique consensus engine (EIP-225: signing, verification, snapshots) | Complete |
+| 4 | Fork choice (heaviest-chain rule, reorg detection) | Complete |
+| 5 | P2P networking (libp2p, Gossipsub, peer discovery) | Complete |
+| 6 | JSON-RPC API server | Complete |
 | 7 | Block production (turn detection, payload building, broadcast) | Planned |
 
-See [plan.md](plan.md) for the full design.
+See [plan.md](plan.md) for the full implementation plan.
 
 ## Current Limitations
 
-- **No block processing.** The node starts and shuts down cleanly but does not yet connect to an execution client, validate blocks, or participate in consensus. All subsystems (Engine API, P2P, RPC, Clique engine) are planned but not yet wired up.
-- **No sync.** There is no mechanism to sync chain history from peers or from the execution client. The node will need to start from a trusted checkpoint or a freshly initialised execution client.
+- **Not yet wired together.** All subsystems are implemented and tested individually but the top-level node orchestrator (Phase 7) that connects them has not been written. The binary starts and shuts down cleanly but does not yet connect to an execution client or participate in consensus.
+- **No block production.** Turn detection, payload building, and block sealing are planned for Phase 7.
+- **No sync.** There is no mechanism to sync chain history from peers. The node needs to start from a trusted checkpoint or a freshly initialised execution client.
 - **No slashing protection.** Equivocation detection (signing two different blocks at the same height) is not implemented.
 - **Clique only.** This client is purpose-built for Clique PoA and is not compatible with Ethereum mainnet (Proof-of-Stake / Gasper).
 - **No MEV / builder API.** Block production will use the standard `engine_getPayload` flow; the builder API (mev-boost) is out of scope.
@@ -134,14 +144,15 @@ See [plan.md](plan.md) for the full design.
 cmd/clique-node/        # Binary entrypoint and CLI flag handling
 internal/config/        # TOML configuration loading and validation
 internal/log/           # Structured logging (zerolog wrapper)
-internal/clique/        # Clique EIP-225 consensus engine (planned)
-internal/engine/        # Engine API client (planned)
-internal/p2p/           # libp2p networking and Gossipsub (planned)
-internal/forkchoice/    # Fork choice store (planned)
-internal/node/          # Top-level node orchestrator (planned)
-internal/rpc/           # JSON-RPC HTTP server (planned)
+internal/clique/        # Clique EIP-225 consensus engine
+internal/engine/        # Engine API client (JWT auth, newPayload, FCU, getPayload)
+internal/p2p/           # libp2p networking, Gossipsub, status handshake
+internal/forkchoice/    # Heaviest-chain fork choice store
+internal/node/          # Top-level node orchestrator (Phase 7 — planned)
+internal/rpc/           # JSON-RPC HTTP server
+docs/                   # Technical documentation
 config.example.toml     # Annotated example configuration
-plan.md                 # Full implementation plan and architecture
+plan.md                 # Full implementation plan
 ```
 
 ## Dependencies
