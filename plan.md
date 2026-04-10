@@ -189,6 +189,19 @@ github.com/urfave/cli/v2               # CLI
 
 **Out of scope (initially):**
 - Sync from genesis (start from trusted checkpoint or paired EL)
-- Slashing / equivocation detection
-- MEV / builder API integration
-- BLS attestations (not applicable to Clique)
+- Not needed: Slashing / equivocation detection
+- Not needed: MEV / builder API integration
+- Not needed: BLS attestations (not applicable to Clique)
+
+**To Check After Initial Build**
+- Ensure block information get persisted to disk
+- Docker image creation
+- Test run with three consensus clients with three Geth execution clients.
+- Going from pre-merge network.
+- Key storage in KMS.
+- Check:
+  - Buffer overflows in P2P
+  - Is Clique implemented correctly?
+  - Are there issues with Clique headers and modern Geth?
+  - Are the latest versions of third party libraries being used?
+  - Do feature comparison between other consensus client to understand differences
