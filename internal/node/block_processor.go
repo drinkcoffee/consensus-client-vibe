@@ -62,7 +62,9 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 	}
 
 	// Step 5: Add to fork-choice store.
-	headChanged, err := n.stor.AddBlock(header)
+	// blk.ExecutionPayloadHash is the EL block hash so ForkchoiceState can
+	// supply the correct EL hash to engine_forkchoiceUpdated.
+	headChanged, err := n.stor.AddBlock(header, blk.ExecutionPayloadHash)
 	if err != nil {
 		n.log.Error().Err(err).Uint64("number", num).Msg("handleBlock: AddBlock failed")
 		return

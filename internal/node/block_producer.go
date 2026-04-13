@@ -156,7 +156,17 @@ func (n *Node) produceBlock(ctx context.Context) {
 	n.log.Info().Uint64("number", nextNum).Msg("producing block")
 
 	// Step 2: Request payload from EL.
-	unsignedExtra := n.buildExtra(snap, nextNum)
+	//
+	// elExtra is the extraData written into the EL block — a plain 32-byte
+	// vanity field. Post-merge Geth enforces ≤32 bytes on extraData, so we
+	// cannot embed the Clique seal here.
+	//
+	// clExtra is the full Clique Extra for the CL header: vanity + optional
+	// epoch signer list + 65-byte seal placeholder (filled by SealHeader).
+	// The seal lives in the CL header only; peers recover the signer from it.
+	elExtra := make([]byte, cliqueeng.ExtraVanity)
+	clExtra := n.buildExtra(snap, nextNum)
+
 	zeroHash := common.Hash{}
 	attrs := &engine.PayloadAttributesV3{
 		Timestamp:             hexutil.Uint64(targetTime),
@@ -164,7 +174,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 		SuggestedFeeRecipient: n.signerAddr,
 		Withdrawals:           []*engine.Withdrawal{},
 		ParentBeaconBlockRoot: &zeroHash, //nolint:gosec
-		ExtraData:             unsignedExtra,
+		ExtraData:             elExtra,
 	}
 	state := n.stor.ForkchoiceState()
 	fcuResult, err := n.eng.ForkchoiceUpdatedV3(ctx, state, attrs)
@@ -211,37 +221,40 @@ func (n *Node) produceBlock(ctx context.Context) {
 		}
 	}
 
+	// The CL header's ParentHash is the CL hash of the parent block, which is
+	// what the store uses for all lookups and snapshot computation.
+	// The EL payload's parent is tracked by the EL via the FCU HeadBlockHash
+	// (which ForkchoiceState now returns as the EL hash).
 	header := &types.Header{
-		ParentHash: head.Hash(),
-		UncleHash:  cliqueeng.EmptyUncleHash,
-		Coinbase:   coinbase,
-		Root:       ep.StateRoot,
+		ParentHash:  head.Hash(),
+		UncleHash:   cliqueeng.EmptyUncleHash,
+		Coinbase:    coinbase,
+		Root:        ep.StateRoot,
 		ReceiptHash: ep.ReceiptsRoot,
-		Bloom:      types.BytesToBloom(ep.LogsBloom),
+		Bloom:       types.BytesToBloom(ep.LogsBloom),
 		Difficulty:  n.cliq.CalcDifficulty(snap, nextNum, n.signerAddr),
 		Number:      new(big.Int).SetUint64(nextNum),
 		GasLimit:    uint64(ep.GasLimit),
 		GasUsed:     uint64(ep.GasUsed),
 		Time:        uint64(ep.Timestamp),
-		Extra:       unsignedExtra,
+		Extra:       clExtra,
 		MixDigest:   common.Hash{},
 		Nonce:       nonce,
 		BaseFee:     baseFee,
 	}
 
-	// Step 5: Seal the header (writes 65-byte ECDSA signature into Extra).
+	// Step 5: Seal the CL header (writes 65-byte ECDSA signature into Extra).
+	// The EL execution payload (ep) is not modified — it keeps the 32-byte
+	// elExtra and its own block hash (ep.BlockHash) from Geth.
 	if err := cliqueeng.SealHeader(header, n.signerKey); err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: SealHeader failed")
 		return
 	}
 
-	// Update the execution payload's extra data and block hash to match the
-	// now-signed Clique header (the signature changes both).
-	ep.ExtraData = header.Extra
-	ep.BlockHash = header.Hash()
-
 	// Step 6: Broadcast to peers.
-	blk, err := p2phost.NewCliqueBlock(header, header.Hash())
+	// ExecutionPayloadHash carries the EL block hash so receiving nodes can
+	// direct their Geth to update its fork choice to the right EL block.
+	blk, err := p2phost.NewCliqueBlock(header, ep.BlockHash)
 	if err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: NewCliqueBlock failed")
 		return
@@ -259,7 +272,9 @@ func (n *Node) produceBlock(ctx context.Context) {
 	}
 
 	// Step 8: Add to store, update fork choice.
-	headChanged, err := n.stor.AddBlock(header)
+	// Pass ep.BlockHash as the EL hash so ForkchoiceState returns the correct
+	// EL block hash to engine_forkchoiceUpdated.
+	headChanged, err := n.stor.AddBlock(header, ep.BlockHash)
 	if err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: AddBlock failed")
 		return

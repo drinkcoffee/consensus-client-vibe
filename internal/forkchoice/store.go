@@ -44,16 +44,24 @@ type blockEntry struct {
 type Store struct {
 	mu sync.RWMutex
 
-	// blocks holds every known block, keyed by its header hash.
+	// blocks holds every known block, keyed by its CL header hash.
 	blocks map[common.Hash]*blockEntry
-	// numbers maps canonical-chain block numbers to their header hashes.
+	// numbers maps canonical-chain block numbers to their CL header hashes.
 	numbers map[uint64]common.Hash
+
+	// elHashes maps each CL header hash to the corresponding EL execution
+	// payload hash. The two hashes diverge because the CL header carries the
+	// full 97-byte Clique Extra (seal included), whereas the EL block only
+	// has a 32-byte extraData field. The EL hash is what must be supplied to
+	// engine_forkchoiceUpdated, while the CL hash is used internally for
+	// snapshot computation and parent lookups.
+	elHashes map[common.Hash]common.Hash
 
 	head      *blockEntry // tip of the canonical (heaviest) chain
 	safe      *blockEntry // latest epoch-boundary block on the canonical chain
 	finalized *blockEntry // epoch-boundary block two epochs before head
 
-	genesis common.Hash // hash of the genesis block
+	genesis common.Hash // CL hash of the genesis block
 	epoch   uint64      // blocks per epoch (from Clique genesis config)
 
 	log zerolog.Logger
@@ -76,6 +84,7 @@ func New(genesis *types.Header, epoch uint64) *Store {
 	s := &Store{
 		blocks:    map[common.Hash]*blockEntry{hash: entry},
 		numbers:   map[uint64]common.Hash{0: hash},
+		elHashes:  map[common.Hash]common.Hash{hash: hash}, // genesis CL hash == EL hash
 		head:      entry,
 		safe:      entry,
 		finalized: entry,
@@ -89,9 +98,16 @@ func New(genesis *types.Header, epoch uint64) *Store {
 // AddBlock stores header and updates the canonical head if it extends the
 // heaviest chain. Returns true when the canonical head changes.
 //
+// elHash is the execution payload hash for the corresponding EL block. It is
+// stored alongside the CL header hash so that ForkchoiceState can return the
+// correct EL hashes to engine_forkchoiceUpdated. For the genesis block these
+// two hashes are identical; for all subsequent blocks they differ because the
+// CL header carries the full 97-byte Clique Extra while the EL block only has
+// a 32-byte extraData field.
+//
 // Returns ErrUnknownParent if header's parent has not been added yet.
 // Returns nil error and false if the block was already known.
-func (s *Store) AddBlock(header *types.Header) (bool, error) {
+func (s *Store) AddBlock(header *types.Header, elHash common.Hash) (bool, error) {
 	if header.Number == nil || header.Difficulty == nil {
 		return false, fmt.Errorf("header has nil Number or Difficulty field")
 	}
@@ -113,6 +129,7 @@ func (s *Store) AddBlock(header *types.Header) (bool, error) {
 	td := new(big.Int).Add(parent.TD, header.Difficulty)
 	entry := &blockEntry{Header: header, TD: td}
 	s.blocks[hash] = entry
+	s.elHashes[hash] = elHash
 
 	if s.head == nil || td.Cmp(s.head.TD) > 0 {
 		s.setHead(entry)
@@ -161,19 +178,29 @@ func (s *Store) Finalized() *types.Header {
 
 // ForkchoiceState returns the engine.ForkchoiceStateV1 describing the current
 // canonical tip, ready to be passed to engine_forkchoiceUpdated.
+//
+// All three hashes are EL execution payload hashes, not CL header hashes.
+// The Engine API requires EL hashes because the execution client only knows
+// about its own block tree; it has no visibility into the CL header format.
 func (s *Store) ForkchoiceState() engine.ForkchoiceStateV1 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	state := engine.ForkchoiceStateV1{}
 	if s.head != nil {
-		state.HeadBlockHash = s.head.Header.Hash()
+		if elHash, ok := s.elHashes[s.head.Header.Hash()]; ok {
+			state.HeadBlockHash = elHash
+		}
 	}
 	if s.safe != nil {
-		state.SafeBlockHash = s.safe.Header.Hash()
+		if elHash, ok := s.elHashes[s.safe.Header.Hash()]; ok {
+			state.SafeBlockHash = elHash
+		}
 	}
 	if s.finalized != nil {
-		state.FinalizedBlockHash = s.finalized.Header.Hash()
+		if elHash, ok := s.elHashes[s.finalized.Header.Hash()]; ok {
+			state.FinalizedBlockHash = elHash
+		}
 	}
 	return state
 }
