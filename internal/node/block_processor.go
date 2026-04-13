@@ -38,6 +38,15 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 		Str("hash", hash.Hex()).
 		Msg("received block from P2P")
 
+	// Drop gossip blocks while a sync session is actively rewriting the store
+	// and snapshot state. The block will arrive again on the next gossip cycle
+	// or be covered by the sync itself.
+	if !n.syncMu.TryLock() {
+		n.log.Debug().Uint64("number", num).Msg("handleBlock: sync in progress, dropping gossip block")
+		return
+	}
+	n.syncMu.Unlock()
+
 	// Step 2: Parent must be in the store.
 	parent, ok := n.stor.GetByHash(header.ParentHash)
 	if !ok {
@@ -64,7 +73,7 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 	// Step 5: Add to fork-choice store.
 	// blk.ExecutionPayloadHash is the EL block hash so ForkchoiceState can
 	// supply the correct EL hash to engine_forkchoiceUpdated.
-	headChanged, err := n.stor.AddBlock(header, blk.ExecutionPayloadHash)
+	headChanged, err := n.stor.AddBlock(header, blk.ExecutionPayloadHash, blk.PayloadJSON)
 	if err != nil {
 		n.log.Error().Err(err).Uint64("number", num).Msg("handleBlock: AddBlock failed")
 		return

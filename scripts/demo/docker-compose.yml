@@ -163,6 +163,7 @@ services:
         condition: service_healthy
     volumes:
       - ./generated:/generated:ro
+      - cl-data-1:/data/cl
     command:
       - --config=/generated/config/clique-1.toml
     networks:
@@ -179,6 +180,7 @@ services:
         condition: service_healthy
     volumes:
       - ./generated:/generated:ro
+      - cl-data-2:/data/cl
     command:
       - --config=/generated/config/clique-2.toml
     networks:
@@ -195,6 +197,7 @@ services:
         condition: service_healthy
     volumes:
       - ./generated:/generated:ro
+      - cl-data-3:/data/cl
     command:
       - --config=/generated/config/clique-3.toml
     networks:
@@ -211,6 +214,7 @@ services:
         condition: service_healthy
     volumes:
       - ./generated:/generated:ro
+      - cl-data-4:/data/cl
     command:
       - --config=/generated/config/clique-4.toml
     networks:
@@ -222,3 +226,9 @@ services:
 networks:
   demo:
     driver: bridge
+
+volumes:
+  cl-data-1: {}
+  cl-data-2: {}
+  cl-data-3: {}
+  cl-data-4: {}

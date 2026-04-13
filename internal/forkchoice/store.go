@@ -64,6 +64,17 @@ type Store struct {
 	genesis common.Hash // CL hash of the genesis block
 	epoch   uint64      // blocks per epoch (from Clique genesis config)
 
+	// payloads maps each CL header hash to the JSON-encoded execution payload.
+	// Kept in memory so the sync protocol can serve payloads to catching-up
+	// peers, who must deliver them to their local EL via engine_newPayloadV3
+	// (post-merge Geth does not auto-fetch payloads from devp2p in beacon mode).
+	payloads map[common.Hash][]byte
+
+	// db is an optional persistent backing store. When non-nil every block
+	// accepted by AddBlock is also appended to the file. Nil in tests and
+	// when no data directory is configured.
+	db *ChainDB
+
 	log zerolog.Logger
 }
 
@@ -85,6 +96,7 @@ func New(genesis *types.Header, epoch uint64) *Store {
 		blocks:    map[common.Hash]*blockEntry{hash: entry},
 		numbers:   map[uint64]common.Hash{0: hash},
 		elHashes:  map[common.Hash]common.Hash{hash: hash}, // genesis CL hash == EL hash
+		payloads:  make(map[common.Hash][]byte),
 		head:      entry,
 		safe:      entry,
 		finalized: entry,
@@ -105,9 +117,13 @@ func New(genesis *types.Header, epoch uint64) *Store {
 // CL header carries the full 97-byte Clique Extra while the EL block only has
 // a 32-byte extraData field.
 //
+// payloadJSON is the JSON-encoded engine.ExecutionPayloadV3. It may be nil
+// (e.g. for genesis). When non-nil it is kept in memory so that the sync
+// protocol can serve it to catching-up peers.
+//
 // Returns ErrUnknownParent if header's parent has not been added yet.
 // Returns nil error and false if the block was already known.
-func (s *Store) AddBlock(header *types.Header, elHash common.Hash) (bool, error) {
+func (s *Store) AddBlock(header *types.Header, elHash common.Hash, payloadJSON []byte) (bool, error) {
 	if header.Number == nil || header.Difficulty == nil {
 		return false, fmt.Errorf("header has nil Number or Difficulty field")
 	}
@@ -130,6 +146,15 @@ func (s *Store) AddBlock(header *types.Header, elHash common.Hash) (bool, error)
 	entry := &blockEntry{Header: header, TD: td}
 	s.blocks[hash] = entry
 	s.elHashes[hash] = elHash
+	if len(payloadJSON) > 0 {
+		s.payloads[hash] = payloadJSON
+	}
+
+	if s.db != nil {
+		if err := s.db.Append(header, elHash, payloadJSON); err != nil {
+			s.log.Warn().Err(err).Uint64("number", header.Number.Uint64()).Msg("chain db: append failed")
+		}
+	}
 
 	if s.head == nil || td.Cmp(s.head.TD) > 0 {
 		s.setHead(entry)
@@ -256,6 +281,79 @@ func (s *Store) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.blocks)
+}
+
+// GetPayload returns the JSON-encoded execution payload for the block with the
+// given CL header hash, if it was stored. Returns nil, false when not found
+// (e.g. genesis, or blocks received before payload storage was added).
+func (s *Store) GetPayload(clHash common.Hash) ([]byte, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.payloads[clHash]
+	return p, ok
+}
+
+// SetDB attaches a ChainDB so that all future AddBlock calls are also written
+// to disk. Call this after replaying persisted records at startup to avoid
+// double-writing them.
+func (s *Store) SetDB(db *ChainDB) {
+	s.mu.Lock()
+	s.db = db
+	s.mu.Unlock()
+}
+
+// Reset clears all stored blocks and re-initialises from genesis in-place.
+// It does NOT truncate the ChainDB; callers must do that separately before
+// calling Reset so that the DB and in-memory state stay in sync.
+// The same *Store pointer remains valid, so any other goroutines holding it
+// (e.g. the RPC server) will automatically see the post-reset state.
+func (s *Store) Reset(genesis *types.Header) {
+	td := genesis.Difficulty
+	if td == nil || td.Sign() <= 0 {
+		td = big.NewInt(1)
+	} else {
+		td = new(big.Int).Set(td)
+	}
+	hash := genesis.Hash()
+	entry := &blockEntry{Header: genesis, TD: td}
+
+	s.mu.Lock()
+	s.blocks = map[common.Hash]*blockEntry{hash: entry}
+	s.numbers = map[uint64]common.Hash{0: hash}
+	s.elHashes = map[common.Hash]common.Hash{hash: hash}
+	s.payloads = make(map[common.Hash][]byte)
+	s.head = entry
+	s.safe = entry
+	s.finalized = entry
+	s.genesis = hash
+	s.mu.Unlock()
+}
+
+// BlocksInRange returns the CL headers and corresponding EL hashes for the
+// canonical blocks at numbers [from, to] inclusive. Any gap in the canonical
+// chain index is silently skipped.
+func (s *Store) BlocksInRange(from, to uint64) ([]*types.Header, []common.Hash) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var headers []*types.Header
+	var elHashes []common.Hash
+	for num := from; num <= to; num++ {
+		hash, ok := s.numbers[num]
+		if !ok {
+			continue
+		}
+		entry, ok := s.blocks[hash]
+		if !ok {
+			continue
+		}
+		el, ok := s.elHashes[hash]
+		if !ok {
+			continue
+		}
+		headers = append(headers, entry.Header)
+		elHashes = append(elHashes, el)
+	}
+	return headers, elHashes
 }
 
 // --- internal ---

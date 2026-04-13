@@ -198,6 +198,7 @@ func run(out string) error {
 		}
 		cfg := fmt.Sprintf(`[node]
 network_id = 12345
+data_dir   = "/data/cl"
 
 [engine]
 url            = "http://geth-%d:8551"

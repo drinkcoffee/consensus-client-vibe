@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -53,10 +54,17 @@ type Node struct {
 	signerKey  *ecdsa.PrivateKey // nil in follower mode
 	signerAddr common.Address   // zero in follower mode
 
+	// genesisHeader is the genesis block header fetched from the EL at startup.
+	// It is kept so the sync protocol can reset the store back to genesis.
+	genesisHeader *types.Header
+
+	// db is the on-disk chain journal. Nil when no data directory is configured.
+	db *forkchoice.ChainDB
+
 	// Clique snapshot cache. genesisSnap is the baseline. headSnap is the
 	// snapshot at the current canonical head. epochSnaps caches epoch-
 	// boundary snapshots to avoid replaying from genesis on every reorg.
-	mu         sync.RWMutex
+	mu          sync.RWMutex
 	genesisSnap *cliqueeng.Snapshot
 	headSnap    *cliqueeng.Snapshot
 	epochSnaps  map[uint64]*cliqueeng.Snapshot // epoch start block number → snapshot
@@ -64,6 +72,10 @@ type Node struct {
 	// Block production timer.
 	prodMu    sync.Mutex
 	prodTimer *timerCancel
+
+	// syncMu serialises sync sessions. handleBlock uses TryLock to yield when
+	// a sync is actively rewriting the store.
+	syncMu sync.Mutex
 
 	// runCtx is the root lifecycle context set by Start. It is used as the
 	// parent for all production contexts so that cancelling an in-flight
@@ -146,17 +158,30 @@ func New(cfg *config.Config) (*Node, error) {
 	}
 
 	n := &Node{
-		cfg:         cfg,
-		eng:         engClient,
-		p2p:         p2pH,
-		stor:        stor,
-		cliq:        cliq,
-		signerKey:   signerKey,
-		signerAddr:  signerAddr,
-		genesisSnap: genesisSnap,
-		headSnap:    genesisSnap,
-		epochSnaps:  make(map[uint64]*cliqueeng.Snapshot),
-		log:         logger,
+		cfg:           cfg,
+		eng:           engClient,
+		p2p:           p2pH,
+		stor:          stor,
+		cliq:          cliq,
+		signerKey:     signerKey,
+		signerAddr:    signerAddr,
+		genesisHeader: genesisHeader,
+		genesisSnap:   genesisSnap,
+		headSnap:      genesisSnap,
+		epochSnaps:    make(map[uint64]*cliqueeng.Snapshot),
+		log:           logger,
+	}
+
+	// --- Chain DB (optional persistence) ---
+	if cfg.Node.DataDir != "" {
+		dbPath := filepath.Join(cfg.Node.DataDir, "cl-headers.db")
+		db, err := forkchoice.OpenChainDB(dbPath)
+		if err != nil {
+			logger.Warn().Err(err).Str("path", dbPath).Msg("failed to open chain DB, starting without persistence")
+		} else {
+			n.db = db
+			n.replayChain(db)
+		}
 	}
 
 	// RPC server wired to live node state via closures.
@@ -182,10 +207,12 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 	n.log.Info().Strs("capabilities", caps).Msg("engine API handshake OK")
 
-	// 2. Register the P2P block handler and start the host.
+	// 2. Register the P2P block and sync handlers, then start the host.
 	n.p2p.SetBlockHandler(func(_ libp2ppeer.ID, blk *p2phost.CliqueBlock) {
 		n.handleBlock(ctx, blk)
 	})
+	n.p2p.SetSyncProvider(n.handleSyncRequest)
+	n.p2p.SetSyncHandler(n.syncWithPeer)
 	if err := n.p2p.Start(ctx, &n.cfg.P2P); err != nil {
 		return fmt.Errorf("start P2P: %w", err)
 	}
@@ -232,8 +259,40 @@ func (n *Node) shutdown() error {
 		n.log.Warn().Err(err).Msg("P2P close error")
 	}
 
+	// Close chain DB.
+	if n.db != nil {
+		if err := n.db.Close(); err != nil {
+			n.log.Warn().Err(err).Msg("chain DB close error")
+		}
+	}
+
 	n.log.Info().Msg("shutdown complete")
 	return nil
+}
+
+// HeadNumber returns the block number of the current canonical head.
+// It is safe to call concurrently and is intended for use by tests and
+// external monitors.
+func (n *Node) HeadNumber() uint64 {
+	h := n.stor.Head()
+	if h == nil || h.Number == nil {
+		return 0
+	}
+	return h.Number.Uint64()
+}
+
+// P2PAddr returns the first full multiaddr of this node's P2P host including
+// the /p2p/<peerID> suffix, suitable for use as a boot node address.
+// Returns an empty string if no addresses are available.
+func (n *Node) P2PAddr() string {
+	if n.p2p == nil {
+		return ""
+	}
+	addrs := n.p2p.Addrs()
+	if len(addrs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s/p2p/%s", addrs[0].String(), n.p2p.PeerID().String())
 }
 
 // --- Snapshot management ---

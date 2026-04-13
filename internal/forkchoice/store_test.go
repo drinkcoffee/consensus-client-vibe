@@ -55,7 +55,7 @@ func chain(parent *types.Header, n int, diff int64) []*types.Header {
 func addAll(t *testing.T, s *Store, headers []*types.Header) {
 	t.Helper()
 	for _, h := range headers {
-		if _, err := s.AddBlock(h, h.Hash()); err != nil {
+		if _, err := s.AddBlock(h, h.Hash(), nil); err != nil {
 			t.Fatalf("AddBlock(%d): %v", h.Number.Uint64(), err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestAddBlock_DirectExtension(t *testing.T) {
 	s := New(genesis, 100)
 
 	b1 := child(genesis, 2)
-	changed, err := s.AddBlock(b1, b1.Hash())
+	changed, err := s.AddBlock(b1, b1.Hash(), nil)
 	if err != nil {
 		t.Fatalf("AddBlock: %v", err)
 	}
@@ -162,8 +162,8 @@ func TestAddBlock_Duplicate(t *testing.T) {
 	s := New(genesis, 100)
 
 	b1 := child(genesis, 2)
-	s.AddBlock(b1, b1.Hash()) //nolint
-	changed, err := s.AddBlock(b1, b1.Hash())
+	s.AddBlock(b1, b1.Hash(), nil) //nolint
+	changed, err := s.AddBlock(b1, b1.Hash(), nil)
 	if err != nil {
 		t.Fatalf("duplicate AddBlock should not error: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestAddBlock_UnknownParent(t *testing.T) {
 		ParentHash: common.HexToHash("0xdeadbeef"),
 		Difficulty: big.NewInt(2),
 	}
-	_, err := s.AddBlock(orphan, orphan.Hash())
+	_, err := s.AddBlock(orphan, orphan.Hash(), nil)
 	if !errors.Is(err, ErrUnknownParent) {
 		t.Errorf("expected ErrUnknownParent, got: %v", err)
 	}
@@ -192,11 +192,11 @@ func TestAddBlock_NilFields(t *testing.T) {
 	s := New(genesis, 100)
 
 	nilHash := common.Hash{}
-	_, err := s.AddBlock(&types.Header{Number: nil, Difficulty: big.NewInt(1)}, nilHash)
+	_, err := s.AddBlock(&types.Header{Number: nil, Difficulty: big.NewInt(1)}, nilHash, nil)
 	if err == nil {
 		t.Error("expected error for nil Number")
 	}
-	_, err = s.AddBlock(&types.Header{Number: big.NewInt(1), Difficulty: nil}, nilHash)
+	_, err = s.AddBlock(&types.Header{Number: big.NewInt(1), Difficulty: nil}, nilHash, nil)
 	if err == nil {
 		t.Error("expected error for nil Difficulty")
 	}
@@ -240,7 +240,7 @@ func TestHasBlock(t *testing.T) {
 	if s.HasBlock(b1.Hash()) {
 		t.Error("b1 should not be in store yet")
 	}
-	s.AddBlock(b1, b1.Hash()) //nolint
+	s.AddBlock(b1, b1.Hash(), nil) //nolint
 	if !s.HasBlock(b1.Hash()) {
 		t.Error("b1 should be in store after AddBlock")
 	}
@@ -259,7 +259,7 @@ func TestAddBlock_SideChainLowerTD(t *testing.T) {
 
 	// Fork at block 1 with diff=1 (TD = 1+2+1 = 4 < 5).
 	fork1 := child(main1, 1, 1) // same parent as main2
-	changed, err := s.AddBlock(fork1, fork1.Hash())
+	changed, err := s.AddBlock(fork1, fork1.Hash(), nil)
 	if err != nil {
 		t.Fatalf("AddBlock fork: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestAddBlock_LongerReorg(t *testing.T) {
 	}
 
 	for _, b := range f {
-		if _, err := s.AddBlock(b, b.Hash()); err != nil {
+		if _, err := s.AddBlock(b, b.Hash(), nil); err != nil {
 			t.Fatalf("AddBlock fork2 block %d: %v", b.Number.Uint64(), err)
 		}
 	}

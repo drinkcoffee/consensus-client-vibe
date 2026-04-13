@@ -43,6 +43,8 @@ type Host struct {
 	mu           sync.RWMutex
 	localStatus  StatusMsg
 	blockHandler BlockHandler
+	syncProvider SyncProvider
+	syncHandler  SyncHandler
 
 	mdnsCloser io.Closer // non-nil when mDNS is running
 	log        zerolog.Logger
@@ -308,10 +310,12 @@ func (h *Host) handleStatusStream(s network.Stream) {
 }
 
 // handlePeerStatus checks compatibility and logs the outcome.
-// Incompatible peers are disconnected.
+// Incompatible peers are disconnected. If the peer's head is ahead of ours,
+// the registered SyncHandler (if any) is invoked in a new goroutine.
 func (h *Host) handlePeerStatus(pid peer.ID, remote StatusMsg) {
 	h.mu.RLock()
 	local := h.localStatus
+	sh := h.syncHandler
 	h.mu.RUnlock()
 
 	if remote.NetworkID != local.NetworkID || remote.GenesisHash != local.GenesisHash {
@@ -331,6 +335,10 @@ func (h *Host) handlePeerStatus(pid peer.ID, remote StatusMsg) {
 		Uint64("head_number", remote.HeadNumber).
 		Str("head_hash", remote.HeadHash.Hex()).
 		Msg("peer status exchange complete")
+
+	if sh != nil && remote.HeadNumber > local.HeadNumber {
+		go sh(pid)
+	}
 }
 
 // addrsToStrings converts a slice of multiaddrs to strings for logging.

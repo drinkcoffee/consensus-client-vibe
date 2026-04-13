@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"math/big"
 	"math/rand"
 	"time"
@@ -323,8 +324,10 @@ func (n *Node) produceBlock(ctx context.Context) {
 
 	// Step 8: Add to store, update fork choice.
 	// Pass ep.BlockHash as the EL hash so ForkchoiceState returns the correct
-	// EL block hash to engine_forkchoiceUpdated.
-	headChanged, err := n.stor.AddBlock(header, ep.BlockHash)
+	// EL block hash to engine_forkchoiceUpdated. Also persist the payload JSON
+	// so the sync protocol can deliver it to peers' execution clients.
+	epJSON, _ := json.Marshal(ep)
+	headChanged, err := n.stor.AddBlock(header, ep.BlockHash, epJSON)
 	if err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: AddBlock failed")
 		return
