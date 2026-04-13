@@ -260,7 +260,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 		baseFee = ep.BaseFeePerGas.ToInt()
 	}
 	nonce := cliqueeng.NonceDrop
-	coinbase := n.signerAddr
+	coinbase := common.Address{} // zero address = no vote; using signerAddr here would be a drop-vote for our own key
 
 	// Apply pending vote if one was set via POST /clique/v1/vote.
 	if n.rpc != nil {

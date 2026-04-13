@@ -89,26 +89,29 @@ func TestSync_FollowerCatchesUp(t *testing.T) {
 	geth1Dir := filepath.Join(dir, "geth-1")
 	initGeth(t, gethBin, geth1Dir, genesisPath)
 
-	enginePort1, httpPort1 := freePort(t), freePort(t)
-	geth1 := startGeth(t, gethBin, geth1Dir, chainID, enginePort1, httpPort1, jwt1Path,
+	enginePort1, httpPort1, p2pPort1 := freePort(t), freePort(t), freePort(t)
+	geth1 := startGeth(t, gethBin, geth1Dir, chainID, enginePort1, httpPort1, p2pPort1, jwt1Path,
 		filepath.Join(dir, "geth-1.log"))
 	t.Cleanup(func() { _ = geth1.Process.Kill(); _ = geth1.Wait() })
-	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d", httpPort1), 30*time.Second)
+	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d", httpPort1), 30*time.Second,
+		filepath.Join(dir, "geth-1.log"))
 
 	// ── node-1: single-validator ─────────────────────────────────────────────
 
 	clDir1 := filepath.Join(dir, "cl-1")
-	cfg1 := &config.Config{
-		Node: config.NodeConfig{NetworkID: chainID, DataDir: clDir1},
-		Engine: config.EngineConfig{
-			URL:           fmt.Sprintf("http://127.0.0.1:%d", enginePort1),
-			JWTSecretPath: jwt1Path,
-			ELRPCUrl:      fmt.Sprintf("http://127.0.0.1:%d", httpPort1),
-		},
-		P2P:    config.P2PConfig{ListenAddr: "/ip4/127.0.0.1/tcp/0", MaxPeers: 10},
-		RPC:    config.RPCConfig{ListenAddr: fmt.Sprintf("127.0.0.1:%d", freePort(t))},
-		Clique: config.CliqueConfig{SignerKeyPath: signerKeyPath, Period: period, Epoch: 30000},
-	}
+	cfg1 := config.DefaultConfig()
+	cfg1.Node.NetworkID = chainID
+	cfg1.Node.DataDir = clDir1
+	cfg1.Engine.URL = fmt.Sprintf("http://127.0.0.1:%d", enginePort1)
+	cfg1.Engine.JWTSecretPath = jwt1Path
+	cfg1.Engine.ELRPCUrl = fmt.Sprintf("http://127.0.0.1:%d", httpPort1)
+	cfg1.P2P.ListenAddr = "/ip4/127.0.0.1/tcp/0"
+	cfg1.P2P.MaxPeers = 10
+	cfg1.P2P.BootNodes = nil
+	cfg1.RPC.ListenAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	cfg1.Clique.SignerKeyPath = signerKeyPath
+	cfg1.Clique.Period = period
+	cfg1.Clique.Epoch = 30000
 	node1, err := node.New(cfg1)
 	if err != nil {
 		t.Fatal("create node-1:", err)
@@ -138,30 +141,29 @@ func TestSync_FollowerCatchesUp(t *testing.T) {
 	geth2Dir := filepath.Join(dir, "geth-2")
 	initGeth(t, gethBin, geth2Dir, genesisPath)
 
-	enginePort2, httpPort2 := freePort(t), freePort(t)
-	geth2 := startGeth(t, gethBin, geth2Dir, chainID, enginePort2, httpPort2, jwt2Path,
+	enginePort2, httpPort2, p2pPort2 := freePort(t), freePort(t), freePort(t)
+	geth2 := startGeth(t, gethBin, geth2Dir, chainID, enginePort2, httpPort2, p2pPort2, jwt2Path,
 		filepath.Join(dir, "geth-2.log"))
 	t.Cleanup(func() { _ = geth2.Process.Kill(); _ = geth2.Wait() })
-	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d", httpPort2), 30*time.Second)
+	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d", httpPort2), 30*time.Second,
+		filepath.Join(dir, "geth-2.log"))
 
 	// ── node-2: follower / observer ──────────────────────────────────────────
 
 	clDir2 := filepath.Join(dir, "cl-2")
-	cfg2 := &config.Config{
-		Node: config.NodeConfig{NetworkID: chainID, DataDir: clDir2},
-		Engine: config.EngineConfig{
-			URL:           fmt.Sprintf("http://127.0.0.1:%d", enginePort2),
-			JWTSecretPath: jwt2Path,
-			ELRPCUrl:      fmt.Sprintf("http://127.0.0.1:%d", httpPort2),
-		},
-		P2P: config.P2PConfig{
-			ListenAddr: "/ip4/127.0.0.1/tcp/0",
-			MaxPeers:   10,
-			BootNodes:  []string{node1Addr},
-		},
-		RPC:    config.RPCConfig{ListenAddr: fmt.Sprintf("127.0.0.1:%d", freePort(t))},
-		Clique: config.CliqueConfig{Period: period, Epoch: 30000}, // no signer key → follower
-	}
+	cfg2 := config.DefaultConfig()
+	cfg2.Node.NetworkID = chainID
+	cfg2.Node.DataDir = clDir2
+	cfg2.Engine.URL = fmt.Sprintf("http://127.0.0.1:%d", enginePort2)
+	cfg2.Engine.JWTSecretPath = jwt2Path
+	cfg2.Engine.ELRPCUrl = fmt.Sprintf("http://127.0.0.1:%d", httpPort2)
+	cfg2.P2P.ListenAddr = "/ip4/127.0.0.1/tcp/0"
+	cfg2.P2P.MaxPeers = 10
+	cfg2.P2P.BootNodes = []string{node1Addr}
+	cfg2.RPC.ListenAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	cfg2.Clique.SignerKeyPath = "" // no signer key → follower
+	cfg2.Clique.Period = period
+	cfg2.Clique.Epoch = 30000
 	node2, err := node.New(cfg2)
 	if err != nil {
 		t.Fatal("create node-2:", err)
@@ -309,7 +311,7 @@ func initGeth(t *testing.T, bin, datadir, genesisPath string) {
 
 // startGeth launches a geth process and redirects all output to logPath.
 // The caller is responsible for killing the process (typically via t.Cleanup).
-func startGeth(t *testing.T, bin, datadir string, chainID, enginePort, httpPort int,
+func startGeth(t *testing.T, bin, datadir string, chainID, enginePort, httpPort, p2pPort int,
 	jwtPath, logPath string) *exec.Cmd {
 	t.Helper()
 
@@ -330,6 +332,9 @@ func startGeth(t *testing.T, bin, datadir string, chainID, enginePort, httpPort 
 		"--http.addr=127.0.0.1",
 		fmt.Sprintf("--http.port=%d", httpPort),
 		"--http.api=eth,net,web3",
+		"--http.vhosts=*",
+		fmt.Sprintf("--port=%d", p2pPort),
+		"--ipcdisable",
 		"--nodiscover",
 		"--maxpeers=0",
 		"--syncmode=full",
@@ -348,23 +353,38 @@ func startGeth(t *testing.T, bin, datadir string, chainID, enginePort, httpPort 
 
 // waitForHTTP polls url with an eth_blockNumber JSON-RPC call until geth's
 // HTTP server is accepting requests or timeout elapses.
-func waitForHTTP(t *testing.T, url string, timeout time.Duration) {
+// logPath (optional) is the geth log file; its tail is printed on failure.
+func waitForHTTP(t *testing.T, url string, timeout time.Duration, logPath ...string) {
 	t.Helper()
 	client := &http.Client{Timeout: 2 * time.Second}
-	body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	const payload = `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`
 	deadline := time.Now().Add(timeout)
+	var lastErr string
 	for time.Now().Before(deadline) {
-		body.Reset(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
-		resp, err := client.Post(url, "application/json", body)
-		if err == nil {
+		resp, err := client.Post(url, "application/json", strings.NewReader(payload))
+		if err != nil {
+			lastErr = err.Error()
+		} else {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
 			}
+			lastErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("geth at %s not ready after %s", url, timeout)
+	// On failure, dump the last few lines of the geth log if available.
+	if len(logPath) > 0 && logPath[0] != "" {
+		if data, err := os.ReadFile(logPath[0]); err == nil {
+			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+			tail := lines
+			if len(tail) > 40 {
+				tail = tail[len(tail)-40:]
+			}
+			t.Logf("=== geth log tail (%s) ===\n%s", logPath[0], strings.Join(tail, "\n"))
+		}
+	}
+	t.Fatalf("geth at %s not ready after %s (last error: %s)", url, timeout, lastErr)
 }
 
 // waitForBlock polls n.HeadNumber() every 500 ms until it reaches target or

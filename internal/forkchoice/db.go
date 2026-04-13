@@ -23,7 +23,7 @@ import (
 type persistedBlock struct {
 	Header      rlp.RawValue
 	ELHash      common.Hash
-	PayloadJSON rlp.RawValue // JSON bytes stored as raw RLP byte string
+	PayloadJSON []byte // raw JSON bytes; stored as an RLP byte string (not RawValue) so arbitrary bytes round-trip correctly
 }
 
 // DBRecord is a decoded record returned by ChainDB.ReadAll.
