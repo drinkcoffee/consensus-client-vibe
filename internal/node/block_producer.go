@@ -73,9 +73,17 @@ func (n *Node) scheduleBlockProduction(ctx context.Context) {
 		delay = time.Until(baseTime)
 	} else {
 		// Out-of-turn: back off by dist×wiggle + a random jitter up to wiggle.
+		// Floor time.Until(baseTime) at zero so that when the parent block is
+		// old (e.g. genesis timestamp = 0), the wiggle is still measured from
+		// now rather than from a large negative value that would clamp every
+		// signer's delay to zero, causing simultaneous production.
 		//nolint:gosec // non-crypto random is fine for block timing
 		jitter := time.Duration(rand.Int63n(int64(wiggle)))
-		delay = time.Until(baseTime) + time.Duration(dist)*wiggle + jitter
+		fromBase := time.Until(baseTime)
+		if fromBase < 0 {
+			fromBase = 0
+		}
+		delay = fromBase + time.Duration(dist)*wiggle + jitter
 	}
 	if delay < 0 {
 		delay = 0
@@ -89,7 +97,17 @@ func (n *Node) scheduleBlockProduction(ctx context.Context) {
 		Msg("scheduling block production")
 
 	// Cancel any previous timer and start a fresh one.
-	prodCtx, cancel := context.WithCancel(ctx)
+	// Always derive from n.runCtx (the node lifecycle context), NOT from the
+	// caller's ctx. If ctx were a prodCtx from a previous slot,
+	// scheduleBlockProduction would cancel it below, immediately killing the
+	// child context for the next slot.
+	// Fall back to ctx if runCtx has not been set (e.g. in unit tests that
+	// call scheduleBlockProduction directly without going through Start).
+	rootCtx := n.runCtx
+	if rootCtx == nil {
+		rootCtx = ctx
+	}
+	prodCtx, cancel := context.WithCancel(rootCtx)
 
 	n.prodMu.Lock()
 	if n.prodTimer != nil {
@@ -139,6 +157,10 @@ func (n *Node) produceBlock(ctx context.Context) {
 	// Guard: signed too recently?
 	if snap.HasRecentlySigned(nextNum, n.signerAddr) {
 		n.log.Debug().Msg("produceBlock: signed recently, skipping")
+		n.log.Debug().
+      		Str("signer", n.signerAddr.Hex()).
+      		Uint64("value", nextNum).
+      		Msg("produceBlock: signed recently")          
 		return
 	}
 
@@ -176,11 +198,39 @@ func (n *Node) produceBlock(ctx context.Context) {
 		ParentBeaconBlockRoot: &zeroHash, //nolint:gosec
 		ExtraData:             elExtra,
 	}
+	// The EL on this node may not yet have the parent execution payload: the
+	// CL wire message carries only the CL header, so peer ELs must sync the
+	// payload from devp2p, which can take hundreds of ms. Poll until VALID or
+	// until the sync timeout expires, then reschedule rather than silently die.
+	const elSyncTimeout = 8 * time.Second
+	const elSyncPoll = 300 * time.Millisecond
+
 	state := n.stor.ForkchoiceState()
 	fcuResult, err := n.eng.ForkchoiceUpdatedV3(ctx, state, attrs)
 	if err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: ForkchoiceUpdatedV3 (start) failed")
 		return
+	}
+	syncDeadline := time.Now().Add(elSyncTimeout)
+	for fcuResult.PayloadStatus.Status == engine.PayloadStatusSyncing {
+		if time.Now().After(syncDeadline) {
+			n.log.Warn().Uint64("number", nextNum).
+				Msg("produceBlock: EL still syncing parent, rescheduling")
+			n.scheduleBlockProduction(ctx)
+			return
+		}
+		n.log.Debug().Uint64("number", nextNum).
+			Msg("produceBlock: EL syncing parent, waiting")
+		select {
+		case <-time.After(elSyncPoll):
+		case <-ctx.Done():
+			return
+		}
+		fcuResult, err = n.eng.ForkchoiceUpdatedV3(ctx, state, attrs)
+		if err != nil {
+			n.log.Error().Err(err).Msg("produceBlock: ForkchoiceUpdatedV3 (retry) failed")
+			return
+		}
 	}
 	if fcuResult.PayloadStatus.Status != engine.PayloadStatusValid {
 		n.log.Error().Str("status", fcuResult.PayloadStatus.Status).
@@ -252,9 +302,9 @@ func (n *Node) produceBlock(ctx context.Context) {
 	}
 
 	// Step 6: Broadcast to peers.
-	// ExecutionPayloadHash carries the EL block hash so receiving nodes can
-	// direct their Geth to update its fork choice to the right EL block.
-	blk, err := p2phost.NewCliqueBlock(header, ep.BlockHash)
+	// The full execution payload is included so receiving nodes can deliver it
+	// to their local EL via engine_newPayloadV3 without waiting for devp2p.
+	blk, err := p2phost.NewCliqueBlock(header, ep)
 	if err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: NewCliqueBlock failed")
 		return

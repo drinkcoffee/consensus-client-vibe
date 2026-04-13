@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/peterrobinson/consensus-client-vibe/internal/config"
+	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 )
 
 // testStatus returns a sample StatusMsg for testing.
@@ -94,7 +95,7 @@ func TestTwoHosts_BlockPropagation(t *testing.T) {
 		Extra:      make([]byte, 97),
 	}
 	payloadHash := common.HexToHash("0xcafe")
-	blk, err := NewCliqueBlock(h, payloadHash)
+	blk, err := NewCliqueBlock(h, engine.ExecutionPayloadV3{BlockHash: payloadHash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +202,7 @@ func TestHost_BroadcastBlock_NoSubscribers(t *testing.T) {
 		Number:     big.NewInt(1),
 		Difficulty: big.NewInt(1),
 		Extra:      make([]byte, 97),
-	}, common.Hash{})
+	}, engine.ExecutionPayloadV3{})
 	if err != nil {
 		t.Fatal(err)
 	}

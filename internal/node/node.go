@@ -65,6 +65,11 @@ type Node struct {
 	prodMu    sync.Mutex
 	prodTimer *timerCancel
 
+	// runCtx is the root lifecycle context set by Start. It is used as the
+	// parent for all production contexts so that cancelling an in-flight
+	// production slot (to replace the timer) does not also kill the next slot.
+	runCtx context.Context
+
 	log zerolog.Logger
 }
 
@@ -193,6 +198,7 @@ func (n *Node) Start(ctx context.Context) error {
 	}()
 
 	// 4. Schedule first production slot.
+	n.runCtx = ctx
 	n.scheduleBlockProduction(ctx)
 
 	n.log.Info().Msg("node started")

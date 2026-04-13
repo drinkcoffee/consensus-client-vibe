@@ -15,33 +15,62 @@ package p2p
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
+
+	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 )
 
 // CliqueBlock is the Gossipsub wire type for propagating signed block headers.
 // The header is stored as a raw RLP byte slice so callers can decode it into
 // a *types.Header with a single rlp.DecodeBytes call.
+//
+// The full execution payload is included so that receiving nodes can deliver
+// it to their local execution client via engine_newPayloadV3. This mirrors
+// how Ethereum beacon blocks include the full ExecutionPayload, ensuring that
+// each node's EL has the block before the next production slot fires.
 type CliqueBlock struct {
 	// Header is the RLP-encoded *types.Header (including the 65-byte seal in
 	// the trailing bytes of Extra).
 	Header rlp.RawValue
-	// ExecutionPayloadHash is the block hash of the corresponding execution
-	// payload managed by the paired execution client.
+	// ExecutionPayloadHash is the EL block hash — a convenience field equal to
+	// the BlockHash field inside PayloadJSON. Kept for fast access without
+	// a full JSON decode.
 	ExecutionPayloadHash common.Hash
+	// PayloadJSON is the JSON-encoded engine.ExecutionPayloadV3. Receiving
+	// nodes pass this directly to engine_newPayloadV3 on their local EL.
+	PayloadJSON []byte
 }
 
-// NewCliqueBlock creates a CliqueBlock from a header and execution payload hash.
-func NewCliqueBlock(h *types.Header, payloadHash common.Hash) (*CliqueBlock, error) {
+// NewCliqueBlock creates a CliqueBlock from a CL header and full execution payload.
+func NewCliqueBlock(h *types.Header, payload engine.ExecutionPayloadV3) (*CliqueBlock, error) {
 	raw, err := rlp.EncodeToBytes(h)
 	if err != nil {
 		return nil, fmt.Errorf("RLP encode header: %w", err)
 	}
-	return &CliqueBlock{Header: raw, ExecutionPayloadHash: payloadHash}, nil
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("JSON encode payload: %w", err)
+	}
+	return &CliqueBlock{
+		Header:               raw,
+		ExecutionPayloadHash: payload.BlockHash,
+		PayloadJSON:          payloadJSON,
+	}, nil
+}
+
+// DecodePayload decodes the execution payload from its JSON representation.
+func (b *CliqueBlock) DecodePayload() (*engine.ExecutionPayloadV3, error) {
+	var p engine.ExecutionPayloadV3
+	if err := json.Unmarshal(b.PayloadJSON, &p); err != nil {
+		return nil, fmt.Errorf("JSON decode payload: %w", err)
+	}
+	return &p, nil
 }
 
 // DecodeHeader decodes the embedded header from its raw RLP representation.

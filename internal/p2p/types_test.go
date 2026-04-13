@@ -7,6 +7,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+
+	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 )
 
 // --- CliqueBlock ---
@@ -18,8 +20,9 @@ func TestCliqueBlock_EncodeDecodeRoundtrip(t *testing.T) {
 		Extra:      make([]byte, 97), // vanity(32) + seal(65)
 	}
 	payloadHash := common.HexToHash("0xdeadbeef")
+	payload := engine.ExecutionPayloadV3{BlockHash: payloadHash}
 
-	blk, err := NewCliqueBlock(h, payloadHash)
+	blk, err := NewCliqueBlock(h, payload)
 	if err != nil {
 		t.Fatalf("NewCliqueBlock: %v", err)
 	}
@@ -35,10 +38,19 @@ func TestCliqueBlock_EncodeDecodeRoundtrip(t *testing.T) {
 		t.Fatalf("DecodeCliqueBlock: %v", err)
 	}
 
-	// Compare payload hash.
+	// Compare payload hash (convenience field).
 	if blk2.ExecutionPayloadHash != payloadHash {
 		t.Errorf("ExecutionPayloadHash: got %s, want %s",
 			blk2.ExecutionPayloadHash.Hex(), payloadHash.Hex())
+	}
+
+	// Decode and compare the full payload.
+	p2, err := blk2.DecodePayload()
+	if err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if p2.BlockHash != payloadHash {
+		t.Errorf("payload BlockHash: got %s, want %s", p2.BlockHash.Hex(), payloadHash.Hex())
 	}
 
 	// Decode the embedded header and compare number.
@@ -57,14 +69,15 @@ func TestCliqueBlock_RawHeaderPreserved(t *testing.T) {
 		Difficulty: big.NewInt(1),
 		Extra:      make([]byte, 97),
 	}
+	payload := engine.ExecutionPayloadV3{}
 
-	blk, err := NewCliqueBlock(h, common.Hash{})
+	blk, err := NewCliqueBlock(h, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// The raw bytes of the embedded header must be stable (same if encoded again).
-	blk2, err := NewCliqueBlock(h, common.Hash{})
+	blk2, err := NewCliqueBlock(h, payload)
 	if err != nil {
 		t.Fatal(err)
 	}

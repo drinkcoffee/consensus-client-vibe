@@ -75,10 +75,37 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 		return
 	}
 
-	// Step 6: Notify the execution client of the new canonical head.
-	// We do not call engine_newPayloadV3 here because the EL is expected to
-	// receive the execution payload via its own devp2p. We simply update the
-	// fork-choice pointers.
+	// Step 6: Deliver the execution payload to the local EL, then update
+	// fork choice. We must call engine_newPayloadV3 before
+	// engine_forkchoiceUpdatedV3: in post-merge beacon mode, Geth does not
+	// proactively fetch unknown blocks from devp2p peers when FCU references
+	// an unknown hash — it expects the CL to deliver payloads directly.
+	// Skipping this step would leave the EL without the parent block, causing
+	// engine_forkchoiceUpdatedV3 to return SYNCING indefinitely when the next
+	// signer tries to build on top of this block.
+	payload, err := blk.DecodePayload()
+	if err != nil {
+		n.log.Error().Err(err).Uint64("number", num).Msg("handleBlock: decode payload failed")
+		return
+	}
+	payloadStatus, err := n.eng.NewPayloadV3(ctx, *payload, nil, common.Hash{})
+	if err != nil {
+		n.log.Error().Err(err).Uint64("number", num).Msg("handleBlock: NewPayloadV3 failed")
+		return
+	}
+	if payloadStatus.Status == engine.PayloadStatusInvalid {
+		errMsg := "<nil>"
+		if payloadStatus.ValidationError != nil {
+			errMsg = *payloadStatus.ValidationError
+		}
+		n.log.Warn().
+			Str("status", payloadStatus.Status).
+			Str("error", errMsg).
+			Uint64("number", num).
+			Msg("handleBlock: EL rejected payload")
+		return
+	}
+
 	state := n.stor.ForkchoiceState()
 	result, err := n.eng.ForkchoiceUpdatedV3(ctx, state, nil)
 	if err != nil {

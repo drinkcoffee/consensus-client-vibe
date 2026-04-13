@@ -255,7 +255,7 @@ func TestHandleBlock_UnknownParent(t *testing.T) {
 		Extra:      make([]byte, cliqueeng.ExtraVanity+cliqueeng.ExtraSeal),
 		Time:       1015,
 	}
-	blk, _ := p2phost.NewCliqueBlock(orphan, common.Hash{})
+	blk, _ := p2phost.NewCliqueBlock(orphan, engine.ExecutionPayloadV3{})
 	initialLen := n.stor.Len()
 
 	n.handleBlock(ctx, blk)
@@ -288,7 +288,7 @@ func TestHandleBlock_Valid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	blk, err := p2phost.NewCliqueBlock(h, h.Hash())
+	blk, err := p2phost.NewCliqueBlock(h, engine.ExecutionPayloadV3{BlockHash: h.Hash()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestHandleBlock_InvalidSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	blk, _ := p2phost.NewCliqueBlock(h, h.Hash())
+	blk, _ := p2phost.NewCliqueBlock(h, engine.ExecutionPayloadV3{BlockHash: h.Hash()})
 	n.handleBlock(ctx, blk)
 
 	// Block should NOT be in the store.
