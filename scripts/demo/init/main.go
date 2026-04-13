@@ -155,6 +155,15 @@ func run(out string) error {
 			"cancunTime":                    0,
 			"terminalTotalDifficulty":       0,
 			"terminalTotalDifficultyPassed": true,
+			// blobSchedule is required by Geth v1.15+ when cancunTime is set.
+			// Values are the standard EIP-4844 Cancun parameters.
+			"blobSchedule": map[string]interface{}{
+				"cancun": map[string]interface{}{
+					"target":               3,
+					"max":                  6,
+					"baseFeeUpdateFraction": 3338477,
+				},
+			},
 			"clique": map[string]interface{}{
 				"period": 5,
 				"epoch":  30000,
