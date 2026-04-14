@@ -1,12 +1,13 @@
-// Package p2p implements the Clique consensus client's peer-to-peer networking
+// Package p2p implements the consensus client's peer-to-peer networking
 // layer on top of libp2p.
 //
 // Wire protocol:
 //
-//   /clique/block/1   — Gossipsub topic carrying signed CliqueBlock messages.
-//   /clique/status/1  — Stream protocol for the peer handshake (StatusMsg
-//                       exchange) performed when a new outbound connection is
-//                       established.
+//   /consensus/block/1  — Gossipsub topic carrying signed CliqueBlock messages.
+//   /qbft/consensus/1   — Gossipsub topic carrying QBFTMsg messages.
+//   /clique/status/1    — Stream protocol for the peer handshake (StatusMsg
+//                         exchange) performed when a new outbound connection is
+//                         established.
 //
 // Message encoding: all messages are RLP-encoded. Status stream messages are
 // further framed with a 4-byte big-endian length prefix so that they can be
@@ -146,4 +147,33 @@ func readMsg(r io.Reader, out interface{}, maxSize uint32) error {
 		return fmt.Errorf("RLP decode: %w", err)
 	}
 	return nil
+}
+
+// QBFTMsg is the Gossipsub wire type for QBFT consensus messages.
+// Type is one of the MsgType constants from the qbft/core package.
+// Data is the RLP-encoded Proposal/Prepare/Commit/RoundChange payload.
+// Sig is a 65-byte ECDSA signature over keccak256(Type ++ Data) — authenticates
+// the sender. The sender address is recovered by the recipient before dispatch.
+type QBFTMsg struct {
+	Type uint8
+	Data []byte
+	Sig  []byte
+}
+
+// Encode serialises the QBFTMsg to RLP for transmission over Gossipsub.
+func (m *QBFTMsg) Encode() ([]byte, error) {
+	data, err := rlp.EncodeToBytes(m)
+	if err != nil {
+		return nil, fmt.Errorf("encode QBFTMsg: %w", err)
+	}
+	return data, nil
+}
+
+// DecodeQBFTMsg deserialises a QBFTMsg from RLP bytes.
+func DecodeQBFTMsg(data []byte) (*QBFTMsg, error) {
+	var m QBFTMsg
+	if err := rlp.DecodeBytes(data, &m); err != nil {
+		return nil, fmt.Errorf("decode QBFTMsg: %w", err)
+	}
+	return &m, nil
 }

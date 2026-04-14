@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	p2phost "github.com/peterrobinson/consensus-client-vibe/internal/p2p"
 )
@@ -188,7 +187,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	// epoch signer list + 65-byte seal placeholder (filled by SealHeader).
 	// The seal lives in the CL header only; peers recover the signer from it.
 	elExtra := make([]byte, n.cliq.ExtraVanity())
-	clExtra := n.buildExtra(snap, nextNum)
+	clExtra := n.cliq.BuildExtra(snap, nextNum)
 
 	zeroHash := common.Hash{}
 	attrs := &engine.PayloadAttributesV3{
@@ -366,16 +365,3 @@ func (n *Node) produceBlock(ctx context.Context) {
 	n.scheduleBlockProduction(ctx)
 }
 
-// buildExtra constructs the Extra field for the next Clique block.
-// At epoch boundaries, the signer list is embedded after the vanity bytes.
-// The last ExtraSeal bytes are zero-padded (to be filled in by SealHeader).
-func (n *Node) buildExtra(snap consensus.Snapshot, nextNum uint64) []byte {
-	extra := make([]byte, n.cliq.ExtraVanity()) // 32 zero vanity bytes
-	if nextNum%n.cliq.Epoch() == 0 {
-		for _, addr := range snap.SignerList() {
-			extra = append(extra, addr.Bytes()...)
-		}
-	}
-	extra = append(extra, make([]byte, n.cliq.ExtraSeal())...) // 65 zero seal bytes
-	return extra
-}

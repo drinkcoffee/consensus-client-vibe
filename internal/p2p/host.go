@@ -21,7 +21,9 @@ import (
 
 const (
 	// blockTopic is the Gossipsub topic for propagating signed block headers.
-	blockTopic = "/clique/block/1"
+	blockTopic = "/consensus/block/1"
+	// qbftTopic is the Gossipsub topic for QBFT consensus messages.
+	qbftTopic = "/qbft/consensus/1"
 	// statusProtocol is the stream protocol ID for the peer status handshake.
 	statusProtocol = "/clique/status/1"
 
@@ -32,19 +34,25 @@ const (
 // BlockHandler is called when a CliqueBlock is received from a remote peer.
 type BlockHandler func(from peer.ID, block *CliqueBlock)
 
-// Host wraps a libp2p host with Clique-specific Gossipsub and status protocol.
+// QBFTMsgHandler is called when a QBFTMsg is received from a remote peer.
+type QBFTMsgHandler func(msg *QBFTMsg)
+
+// Host wraps a libp2p host with consensus-specific Gossipsub and status protocol.
 // It is safe for concurrent use.
 type Host struct {
 	h    lhost.Host
 	ps   *pubsub.PubSub
 	bt   *pubsub.Topic
 	bsub *pubsub.Subscription
+	qt   *pubsub.Topic
+	qsub *pubsub.Subscription
 
-	mu           sync.RWMutex
-	localStatus  StatusMsg
-	blockHandler BlockHandler
-	syncProvider SyncProvider
-	syncHandler  SyncHandler
+	mu              sync.RWMutex
+	localStatus     StatusMsg
+	blockHandler    BlockHandler
+	qbftMsgHandler  QBFTMsgHandler
+	syncProvider    SyncProvider
+	syncHandler     SyncHandler
 
 	mdnsCloser io.Closer // non-nil when mDNS is running
 	log        zerolog.Logger
@@ -103,6 +111,19 @@ func (h *Host) Start(ctx context.Context, cfg *config.P2PConfig) error {
 	}
 	h.bsub = bsub
 
+	// QBFT consensus topic.
+	qt, err := ps.Join(qbftTopic)
+	if err != nil {
+		return fmt.Errorf("join qbft topic: %w", err)
+	}
+	h.qt = qt
+
+	qsub, err := qt.Subscribe()
+	if err != nil {
+		return fmt.Errorf("subscribe to qbft topic: %w", err)
+	}
+	h.qsub = qsub
+
 	// Status stream handler (listener / server side).
 	h.h.SetStreamHandler(statusProtocol, h.handleStatusStream)
 
@@ -116,8 +137,9 @@ func (h *Host) Start(ctx context.Context, cfg *config.P2PConfig) error {
 		},
 	})
 
-	// Start background subscription loop.
+	// Start background subscription loops.
 	go h.subscribeBlocks(ctx)
+	go h.subscribeQBFT(ctx)
 
 	// Optional mDNS discovery.
 	if cfg.EnableMDNS {
@@ -159,6 +181,9 @@ func (h *Host) Close() error {
 	if h.bsub != nil {
 		h.bsub.Cancel()
 	}
+	if h.qsub != nil {
+		h.qsub.Cancel()
+	}
 	if h.mdnsCloser != nil {
 		_ = h.mdnsCloser.Close()
 	}
@@ -178,6 +203,29 @@ func (h *Host) SetBlockHandler(fn BlockHandler) {
 	h.mu.Lock()
 	h.blockHandler = fn
 	h.mu.Unlock()
+}
+
+// SetQBFTMsgHandler registers the callback invoked when a QBFTMsg arrives via
+// Gossipsub. Replaces any previous handler.
+func (h *Host) SetQBFTMsgHandler(fn QBFTMsgHandler) {
+	h.mu.Lock()
+	h.qbftMsgHandler = fn
+	h.mu.Unlock()
+}
+
+// BroadcastQBFTMsg publishes a QBFTMsg to all Gossipsub peers.
+func (h *Host) BroadcastQBFTMsg(ctx context.Context, msg *QBFTMsg) error {
+	if h.qt == nil {
+		return fmt.Errorf("qbft topic not initialised")
+	}
+	data, err := msg.Encode()
+	if err != nil {
+		return fmt.Errorf("encode qbft msg: %w", err)
+	}
+	if err := h.qt.Publish(ctx, data); err != nil {
+		return fmt.Errorf("publish qbft msg: %w", err)
+	}
+	return nil
 }
 
 // BroadcastBlock publishes a CliqueBlock to all Gossipsub peers.
@@ -242,6 +290,33 @@ func (h *Host) subscribeBlocks(ctx context.Context) {
 		h.mu.RUnlock()
 		if handler != nil {
 			handler(msg.ReceivedFrom, blk)
+		}
+	}
+}
+
+// subscribeQBFT reads QBFTMsg messages from the Gossipsub subscription and
+// dispatches them to the registered handler. Runs until ctx is cancelled.
+func (h *Host) subscribeQBFT(ctx context.Context) {
+	for {
+		msg, err := h.qsub.Next(ctx)
+		if err != nil {
+			return // ctx cancelled or subscription closed
+		}
+		if msg.ReceivedFrom == h.h.ID() {
+			continue // skip our own published messages
+		}
+		qmsg, err := DecodeQBFTMsg(msg.Data)
+		if err != nil {
+			h.log.Warn().Err(err).
+				Str("from", msg.ReceivedFrom.String()).
+				Msg("failed to decode qbft message")
+			continue
+		}
+		h.mu.RLock()
+		handler := h.qbftMsgHandler
+		h.mu.RUnlock()
+		if handler != nil {
+			handler(qmsg)
 		}
 	}
 }

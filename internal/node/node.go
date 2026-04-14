@@ -25,6 +25,7 @@ import (
 
 	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/consensus/clique"
+	qbfteng "github.com/peterrobinson/consensus-client-vibe/internal/consensus/qbft"
 	"github.com/peterrobinson/consensus-client-vibe/internal/config"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	"github.com/peterrobinson/consensus-client-vibe/internal/forkchoice"
@@ -70,9 +71,14 @@ type Node struct {
 	headSnap    consensus.Snapshot
 	epochSnaps  map[uint64]consensus.Snapshot // epoch start block number → snapshot
 
-	// Block production timer.
+	// Block production timer (Clique only).
 	prodMu    sync.Mutex
 	prodTimer *timerCancel
+
+	// qbftMsgCh receives incoming QBFT messages from the P2P handler and
+	// forwards them to the active QBFT instance. Buffered to avoid blocking
+	// the P2P goroutine.
+	qbftMsgCh chan *p2phost.QBFTMsg
 
 	// syncMu serialises sync sessions. handleBlock uses TryLock to yield when
 	// a sync is actively rewriting the store.
@@ -99,10 +105,16 @@ func New(cfg *config.Config) (*Node, error) {
 	logger := log.With("node")
 
 	// --- Signer key ---
+	// Both Clique and QBFT use an ECDSA key; which config field to read
+	// depends on the consensus type.
 	var signerKey *ecdsa.PrivateKey
 	var signerAddr common.Address
-	if cfg.Consensus.Clique.SignerKeyPath != "" {
-		k, err := loadSignerKey(cfg.Consensus.Clique.SignerKeyPath)
+	signerKeyPath := cfg.Consensus.Clique.SignerKeyPath
+	if cfg.Consensus.Type == "qbft" {
+		signerKeyPath = cfg.Consensus.QBFT.ValidatorKeyPath
+	}
+	if signerKeyPath != "" {
+		k, err := loadSignerKey(signerKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("load signer key: %w", err)
 		}
@@ -137,11 +149,17 @@ func New(cfg *config.Config) (*Node, error) {
 		Str("hash", genesisHeader.Hash().Hex()).
 		Msg("genesis block loaded from EL")
 
-	// --- Consensus engine (currently only "clique" is supported) ---
+	// --- Consensus engine ---
 	var cliq consensus.Engine
 	switch cfg.Consensus.Type {
 	case "", "clique":
 		cliq = cliqueeng.New(cfg.Consensus.Clique.Period, cfg.Consensus.Clique.Epoch)
+	case "qbft":
+		cliq = qbfteng.New(
+			cfg.Consensus.QBFT.Period,
+			cfg.Consensus.QBFT.Epoch,
+			time.Duration(cfg.Consensus.QBFT.RequestTimeoutMs)*time.Millisecond,
+		)
 	default:
 		return nil, fmt.Errorf("unsupported consensus type %q", cfg.Consensus.Type)
 	}
@@ -178,6 +196,7 @@ func New(cfg *config.Config) (*Node, error) {
 		genesisSnap:   genesisSnap,
 		headSnap:      genesisSnap,
 		epochSnaps:    make(map[uint64]consensus.Snapshot),
+		qbftMsgCh:     make(chan *p2phost.QBFTMsg, 64),
 		log:           logger,
 	}
 
@@ -220,6 +239,7 @@ func (n *Node) Start(ctx context.Context) error {
 	n.p2p.SetBlockHandler(func(from libp2ppeer.ID, blk *p2phost.CliqueBlock) {
 		n.handleBlock(ctx, from, blk)
 	})
+	n.p2p.SetQBFTMsgHandler(n.handleQBFTMsg)
 	n.p2p.SetSyncProvider(n.handleSyncRequest)
 	n.p2p.SetSyncHandler(n.syncWithPeer)
 	if err := n.p2p.Start(ctx, &n.cfg.P2P); err != nil {
@@ -233,9 +253,13 @@ func (n *Node) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 4. Schedule first production slot.
+	// 4. Schedule first production slot (Clique) or start QBFT loop.
 	n.runCtx = ctx
-	n.scheduleBlockProduction(ctx)
+	if _, isBFT := n.cliq.(consensus.BFTEngine); isBFT {
+		go n.runQBFTLoop(ctx)
+	} else {
+		n.scheduleBlockProduction(ctx)
+	}
 
 	n.log.Info().Msg("node started")
 

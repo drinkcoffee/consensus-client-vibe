@@ -355,7 +355,7 @@ func TestBuildExtra_NonEpoch(t *testing.T) {
 	n := nodeForTest(t, genesis, key, &mockEngine{})
 
 	snap, _ := n.cliq.NewGenesisSnapshot(genesis)
-	extra := n.buildExtra(snap, 1) // block 1 is not an epoch block
+	extra := n.cliq.BuildExtra(snap, 1) // block 1 is not an epoch block
 
 	wantLen := cliqueeng.ExtraVanity + cliqueeng.ExtraSeal
 	if len(extra) != wantLen {
@@ -371,7 +371,7 @@ func TestBuildExtra_Epoch(t *testing.T) {
 	n.cliq = cliqueeng.New(15, 5) // override with epoch=5
 
 	snap, _ := n.cliq.NewGenesisSnapshot(genesis)
-	extra := n.buildExtra(snap, 5) // block 5 = epoch boundary (epoch=5)
+	extra := n.cliq.BuildExtra(snap, 5) // block 5 = epoch boundary (epoch=5)
 
 	// ExtraVanity + 1×20 bytes (one signer) + ExtraSeal
 	wantLen := cliqueeng.ExtraVanity + 20 + cliqueeng.ExtraSeal

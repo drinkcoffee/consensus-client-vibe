@@ -71,3 +71,17 @@ func (e *Engine) SealHeader(header *types.Header, key *ecdsa.PrivateKey) error {
 func (e *Engine) SignerFromHeader(header *types.Header) (common.Address, error) {
 	return SignerFromHeader(header)
 }
+
+// BuildExtra constructs the Extra field for the next Clique block.
+// At epoch boundaries, the signer list is embedded after the vanity bytes.
+// The last ExtraSeal bytes are zero-padded (to be filled in by SealHeader).
+func (e *Engine) BuildExtra(snap consensus.Snapshot, number uint64) []byte {
+	extra := make([]byte, ExtraVanity)
+	if number%e.epoch == 0 {
+		for _, addr := range snap.SignerList() {
+			extra = append(extra, addr.Bytes()...)
+		}
+	}
+	extra = append(extra, make([]byte, ExtraSeal)...)
+	return extra
+}

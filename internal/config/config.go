@@ -65,10 +65,25 @@ type RPCConfig struct {
 
 // ConsensusConfig selects the consensus mechanism and holds its parameters.
 type ConsensusConfig struct {
-	// Type is the consensus mechanism to use. Currently only "clique" is supported.
+	// Type is the consensus mechanism to use: "clique" or "qbft".
 	// Defaults to "clique" when empty.
 	Type   string       `toml:"type"`
 	Clique CliqueConfig `toml:"clique"`
+	QBFT   QBFTConfig   `toml:"qbft"`
+}
+
+// QBFTConfig holds QBFT consensus parameters.
+type QBFTConfig struct {
+	// ValidatorKeyPath is the path to the hex-encoded ECDSA private key used
+	// to sign QBFT messages and propose/commit blocks.
+	// If empty, the node operates in non-signing (follower) mode.
+	ValidatorKeyPath string `toml:"validator_key_path"`
+	// Period is the minimum time between blocks in seconds.
+	Period uint64 `toml:"period"`
+	// Epoch is the number of blocks between validator-set checkpoints.
+	Epoch uint64 `toml:"epoch"`
+	// RequestTimeoutMs is the QBFT round timeout in milliseconds.
+	RequestTimeoutMs uint64 `toml:"request_timeout_ms"`
 }
 
 // CliqueConfig holds Clique consensus parameters.
@@ -170,8 +185,17 @@ func (c *Config) Validate() error {
 	if c.Engine.JWTSecretPath == "" {
 		return fmt.Errorf("engine.jwt_secret_path must be set")
 	}
-	if c.Consensus.Clique.Epoch == 0 {
-		return fmt.Errorf("consensus.clique.epoch must be > 0")
+	switch c.Consensus.Type {
+	case "", "clique":
+		if c.Consensus.Clique.Epoch == 0 {
+			return fmt.Errorf("consensus.clique.epoch must be > 0")
+		}
+	case "qbft":
+		if c.Consensus.QBFT.Epoch == 0 {
+			return fmt.Errorf("consensus.qbft.epoch must be > 0")
+		}
+	default:
+		return fmt.Errorf("consensus.type %q is not supported (use \"clique\" or \"qbft\")", c.Consensus.Type)
 	}
 	if c.P2P.MaxPeers <= 0 {
 		return fmt.Errorf("p2p.max_peers must be > 0")
