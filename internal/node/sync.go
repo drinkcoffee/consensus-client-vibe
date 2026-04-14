@@ -33,7 +33,7 @@ func (n *Node) replayChain(db *forkchoice.ChainDB) {
 
 	skipped := 0
 	for _, rec := range records {
-		if _, err := n.stor.AddBlock(rec.Header, rec.ELHash, rec.PayloadJSON); err != nil {
+		if _, _, err := n.stor.AddBlock(rec.Header, rec.ELHash, rec.PayloadJSON); err != nil {
 			n.log.Debug().Err(err).Uint64("number", rec.Header.Number.Uint64()).Msg("chain db: skipping block during replay")
 			skipped++
 		}
@@ -227,7 +227,7 @@ func (n *Node) importSyncBlocks(ctx context.Context, blocks []p2phost.SyncBlock)
 			}
 		}
 
-		if _, err := n.stor.AddBlock(&h, sb.ELHash, sb.PayloadJSON); err != nil {
+		if _, _, err := n.stor.AddBlock(&h, sb.ELHash, sb.PayloadJSON); err != nil {
 			return fmt.Errorf("block %d (number %d): add to store: %w", i, h.Number, err)
 		}
 

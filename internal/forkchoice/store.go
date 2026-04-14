@@ -108,7 +108,11 @@ func New(genesis *types.Header, epoch uint64) *Store {
 }
 
 // AddBlock stores header and updates the canonical head if it extends the
-// heaviest chain. Returns true when the canonical head changes.
+// heaviest chain. Returns (headChanged, reorgDepth, err).
+//
+// headChanged is true when the canonical head changes. reorgDepth is non-zero
+// when a chain reorganisation occurred; its value is the number of blocks
+// unwound from the old canonical chain back to the common ancestor.
 //
 // elHash is the execution payload hash for the corresponding EL block. It is
 // stored alongside the CL header hash so that ForkchoiceState can return the
@@ -122,10 +126,10 @@ func New(genesis *types.Header, epoch uint64) *Store {
 // protocol can serve it to catching-up peers.
 //
 // Returns ErrUnknownParent if header's parent has not been added yet.
-// Returns nil error and false if the block was already known.
-func (s *Store) AddBlock(header *types.Header, elHash common.Hash, payloadJSON []byte) (bool, error) {
+// Returns nil error and false, 0 if the block was already known.
+func (s *Store) AddBlock(header *types.Header, elHash common.Hash, payloadJSON []byte) (bool, uint64, error) {
 	if header.Number == nil || header.Difficulty == nil {
-		return false, fmt.Errorf("header has nil Number or Difficulty field")
+		return false, 0, fmt.Errorf("header has nil Number or Difficulty field")
 	}
 
 	s.mu.Lock()
@@ -134,12 +138,12 @@ func (s *Store) AddBlock(header *types.Header, elHash common.Hash, payloadJSON [
 	hash := header.Hash()
 
 	if _, exists := s.blocks[hash]; exists {
-		return false, nil // already known, no-op
+		return false, 0, nil // already known, no-op
 	}
 
 	parent, ok := s.blocks[header.ParentHash]
 	if !ok {
-		return false, fmt.Errorf("%w: %s", ErrUnknownParent, header.ParentHash)
+		return false, 0, fmt.Errorf("%w: %s", ErrUnknownParent, header.ParentHash)
 	}
 
 	td := new(big.Int).Add(parent.TD, header.Difficulty)
@@ -157,8 +161,8 @@ func (s *Store) AddBlock(header *types.Header, elHash common.Hash, payloadJSON [
 	}
 
 	if s.head == nil || td.Cmp(s.head.TD) > 0 {
-		s.setHead(entry)
-		return true, nil
+		depth := s.setHead(entry)
+		return true, depth, nil
 	}
 
 	s.log.Debug().
@@ -168,7 +172,7 @@ func (s *Store) AddBlock(header *types.Header, elHash common.Hash, payloadJSON [
 		Str("head_td", s.head.TD.String()).
 		Msg("side-chain block stored (not head)")
 
-	return false, nil
+	return false, 0, nil
 }
 
 // Head returns the header at the tip of the canonical chain.
@@ -360,8 +364,9 @@ func (s *Store) BlocksInRange(from, to uint64) ([]*types.Header, []common.Hash) 
 
 // setHead switches the canonical chain to terminate at newHead, performing a
 // reorg if newHead is not a direct extension of the current head.
+// Returns the reorg depth (0 for a direct extension).
 // Must be called with s.mu held for writing.
-func (s *Store) setHead(newHead *blockEntry) {
+func (s *Store) setHead(newHead *blockEntry) uint64 {
 	oldHead := s.head
 	newHash := newHead.Header.Hash()
 	newNum := newHead.Header.Number.Uint64()
@@ -377,7 +382,7 @@ func (s *Store) setHead(newHead *blockEntry) {
 			Uint64("number", newNum).
 			Str("td", newHead.TD.String()).
 			Msg("canonical head advanced")
-		return
+		return 0
 	}
 
 	// Reorg: find the common ancestor and reconcile the canonical-chain index.
@@ -418,14 +423,16 @@ func (s *Store) setHead(newHead *blockEntry) {
 	s.head = newHead
 	s.updateSafeFinalized()
 
+	reorgDepth := newNum - ancestorNum
 	s.log.Info().
 		Str("new_head", newHash.Hex()).
 		Uint64("new_num", newNum).
 		Str("old_head", oldHead.Header.Hash().Hex()).
 		Uint64("old_num", oldHead.Header.Number.Uint64()).
 		Uint64("common_ancestor", ancestorNum).
-		Uint64("reorg_depth", newNum-ancestorNum).
+		Uint64("reorg_depth", reorgDepth).
 		Msg("chain reorg")
+	return reorgDepth
 }
 
 // findCommonAncestor returns the most recent block that is an ancestor of both

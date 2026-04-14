@@ -77,7 +77,7 @@ func (n *Node) handleBlock(ctx context.Context, from libp2ppeer.ID, blk *p2phost
 	// Step 5: Add to fork-choice store.
 	// blk.ExecutionPayloadHash is the EL block hash so ForkchoiceState can
 	// supply the correct EL hash to engine_forkchoiceUpdated.
-	headChanged, err := n.stor.AddBlock(header, blk.ExecutionPayloadHash, blk.PayloadJSON)
+	headChanged, reorgDepth, err := n.stor.AddBlock(header, blk.ExecutionPayloadHash, blk.PayloadJSON)
 	if err != nil {
 		n.log.Error().Err(err).Uint64("number", num).Msg("handleBlock: AddBlock failed")
 		return
@@ -86,6 +86,16 @@ func (n *Node) handleBlock(ctx context.Context, from libp2ppeer.ID, blk *p2phost
 	if !headChanged {
 		// Valid side-chain block stored but not the new head.
 		return
+	}
+
+	if reorgDepth > 0 {
+		// A reorg has replaced part of the canonical chain. The cached snapshots
+		// were computed against the old chain and are now invalid — clear them so
+		// computeSnapshot rebuilds from the nearest epoch checkpoint on the new
+		// canonical chain.
+		n.mu.Lock()
+		n.epochSnaps = make(map[uint64]consensus.Snapshot)
+		n.mu.Unlock()
 	}
 
 	// Step 6: Deliver the execution payload to the local EL, then update

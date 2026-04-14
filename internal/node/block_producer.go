@@ -327,7 +327,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	// EL block hash to engine_forkchoiceUpdated. Also persist the payload JSON
 	// so the sync protocol can deliver it to peers' execution clients.
 	epJSON, _ := json.Marshal(ep)
-	headChanged, err := n.stor.AddBlock(header, ep.BlockHash, epJSON)
+	headChanged, _, err := n.stor.AddBlock(header, ep.BlockHash, epJSON)
 	if err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: AddBlock failed")
 		return
