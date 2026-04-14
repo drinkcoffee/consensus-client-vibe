@@ -150,14 +150,14 @@ func (s *Snapshot) InTurn(number uint64, signer common.Address) bool {
 func (s *Snapshot) HasRecentlySigned(number uint64, signer common.Address) bool {
 	limit := uint64(len(s.Signers)/2 + 1)
 	for blockNum, addr := range s.Recents {
-		log.Logger.Debug().
-			Str("signer", signer.Hex()).
-			Str("recent_addr", addr.Hex()).
-			Uint64("number", number).
-			Uint64("blockNum", blockNum).
-			Uint64("limit", limit).
-			Uint64("blockNum+limit", blockNum+limit).
-			Msg("HasRecentlySigned: checking recent entry")
+		// log.Logger.Debug().
+		// 	Str("signer", signer.Hex()).
+		// 	Str("recent_addr", addr.Hex()).
+		// 	Uint64("number", number).
+		// 	Uint64("blockNum", blockNum).
+		// 	Uint64("limit", limit).
+		// 	Uint64("blockNum+limit", blockNum+limit).
+		// 	Msg("HasRecentlySigned: checking recent entry")
 		if addr == signer && blockNum+limit > number {
 			return true
 		}
