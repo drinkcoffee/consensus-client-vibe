@@ -253,10 +253,14 @@ func (n *Node) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 4. Schedule first production slot (Clique) or start QBFT loop.
+	// 4. Schedule first production slot (Clique) or start QBFT loop (validators only).
+	// QBFT followers (no signer key) receive committed blocks via the block gossip
+	// topic through handleBlock and do not participate in the protocol loop.
 	n.runCtx = ctx
 	if _, isBFT := n.cliq.(consensus.BFTEngine); isBFT {
-		go n.runQBFTLoop(ctx)
+		if n.signerKey != nil {
+			go n.runQBFTLoop(ctx)
+		}
 	} else {
 		n.scheduleBlockProduction(ctx)
 	}
@@ -301,6 +305,12 @@ func (n *Node) shutdown() error {
 
 	n.log.Info().Msg("shutdown complete")
 	return nil
+}
+
+// SetBootNodes sets the boot node multiaddrs to dial when Start is called.
+// Must be called before Start.
+func (n *Node) SetBootNodes(addrs []string) {
+	n.cfg.P2P.BootNodes = addrs
 }
 
 // HeadNumber returns the block number of the current canonical head.

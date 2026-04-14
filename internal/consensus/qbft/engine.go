@@ -65,16 +65,31 @@ func (e *Engine) NonceAuth() types.BlockNonce { return nonceNull }
 func (e *Engine) NonceDrop() types.BlockNonce { return nonceNull }
 
 // NewGenesisSnapshot derives the initial QBFT snapshot from the genesis header.
-// The genesis header must contain a valid QBFT Extra with a non-empty validator list.
+//
+// It first tries to parse the extra data as IstanbulExtra (native QBFT format).
+// If that fails it falls back to Clique-format extra
+// ([32 vanity][N×20 addrs][65 seal]), which allows a Clique-initialised Geth
+// genesis to be used with QBFT without a custom genesis format.
 func (e *Engine) NewGenesisSnapshot(genesis *types.Header) (consensus.Snapshot, error) {
-	ie, err := DecodeExtra(genesis)
-	if err != nil {
-		return nil, fmt.Errorf("qbft genesis snapshot: %w", err)
+	// Try native QBFT IstanbulExtra format first.
+	if ie, err := DecodeExtra(genesis); err == nil && len(ie.Validators) > 0 {
+		return newSnapshot(0, genesis.Hash(), ie.Validators), nil
 	}
-	if len(ie.Validators) == 0 {
-		return nil, fmt.Errorf("qbft genesis snapshot: empty validator list in genesis extra")
+
+	// Fall back to Clique-format genesis: addresses packed between vanity and seal.
+	extra := genesis.Extra
+	if len(extra) < ExtraVanity+common.AddressLength+ExtraSeal {
+		return nil, fmt.Errorf("qbft genesis: extra too short for any supported format (%d bytes)", len(extra))
 	}
-	return newSnapshot(0, genesis.Hash(), ie.Validators), nil
+	middle := extra[ExtraVanity : len(extra)-ExtraSeal]
+	if len(middle) == 0 || len(middle)%common.AddressLength != 0 {
+		return nil, fmt.Errorf("qbft genesis: extra middle section (%d bytes) is not a multiple of address size", len(middle))
+	}
+	validators := make([]common.Address, len(middle)/common.AddressLength)
+	for i := range validators {
+		copy(validators[i][:], middle[i*common.AddressLength:])
+	}
+	return newSnapshot(0, genesis.Hash(), validators), nil
 }
 
 // NewCheckpointSnapshot derives a QBFT snapshot from an epoch checkpoint header.

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"sort"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -291,9 +293,22 @@ func (c *Core) handleCommit(msg IncomingMsg) []Decision {
 	if len(c.commits) >= c.quorum && c.state != stateCommitted {
 		c.state = stateCommitted
 
-		seals := make([][]byte, 0, len(c.commits))
-		for _, s := range c.commits {
-			seals = append(seals, s)
+		// Sort by signer address for deterministic ordering so all validators
+		// produce identical CommittedSeals arrays → identical header hashes.
+		type addrSeal struct {
+			addr common.Address
+			seal []byte
+		}
+		items := make([]addrSeal, 0, len(c.commits))
+		for addr, seal := range c.commits {
+			items = append(items, addrSeal{addr, seal})
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].addr.Hex() < items[j].addr.Hex()
+		})
+		seals := make([][]byte, len(items))
+		for i, it := range items {
+			seals[i] = it.seal
 		}
 
 		var finalHeader *types.Header

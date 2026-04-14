@@ -144,15 +144,13 @@ func (n *Node) runQBFTInstance(
 			},
 		})
 
-		// Drain stale messages from previous rounds.
-		for {
-			select {
-			case <-n.qbftMsgCh:
-			default:
-				goto drained
-			}
-		}
-	drained:
+		// Do NOT drain qbftMsgCh here. Messages for future or current rounds
+		// may already be sitting in the channel (e.g. a PROPOSAL from the new
+		// proposer that arrived while this node was still finishing the previous
+		// round). The core already ignores messages for the wrong round/sequence,
+		// so an explicit drain is both redundant and harmful: it races against
+		// P2P delivery and can silently discard a valid PROPOSAL, leaving the
+		// round stuck until the timer fires again.
 
 		var initialDecisions []qbftcore.Decision
 		var builtPayload *engine.ExecutionPayloadV3
@@ -178,7 +176,7 @@ func (n *Node) runQBFTInstance(
 			if err != nil {
 				return nil, nil, err
 			}
-			if result.CommittedHeader != nil {
+			if result != nil && result.CommittedHeader != nil {
 				payload := result.CommittedPayload
 				if payload == nil {
 					payload = builtPayload

@@ -164,10 +164,28 @@ func (h *Host) Start(ctx context.Context, cfg *config.P2PConfig) error {
 			continue
 		}
 		go func(info peer.AddrInfo) {
-			if err := h.h.Connect(ctx, info); err != nil {
-				h.log.Warn().Err(err).Str("peer", info.ID.String()).Msg("bootnode connect failed")
-			} else {
-				h.log.Info().Str("peer", info.ID.String()).Msg("connected to bootnode")
+			// Retry with backoff. When all nodes start simultaneously and dial
+			// each other, TLS simultaneous-open can cause the initial dial to
+			// fail. The opposite direction usually succeeds, so an existing
+			// inbound connection is found on the retry and Connect returns nil
+			// immediately.
+			delays := []time.Duration{200 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+			for attempt, delay := range delays {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := h.h.Connect(ctx, info); err == nil {
+					h.log.Info().Str("peer", info.ID.String()).Msg("connected to bootnode")
+					return
+				} else if attempt == len(delays)-1 {
+					h.log.Warn().Err(err).Str("peer", info.ID.String()).Msg("bootnode connect failed")
+					return
+				}
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return
+				}
 			}
 		}(*ai)
 	}
