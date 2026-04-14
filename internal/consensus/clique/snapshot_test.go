@@ -147,10 +147,11 @@ func TestSnapshot_Apply_SingleBlock(t *testing.T) {
 	}
 
 	h := makeHeader(t, 1, nil, inTurnKey, snap, plainExtra(), nil)
-	snap2, err := engine.Apply(snap, []*types.Header{h})
+	snap2raw, err := engine.Apply(snap, []*types.Header{h})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
+	snap2 := asSnap(snap2raw)
 	if snap2.Number != 1 {
 		t.Errorf("snap2.Number = %d, want 1", snap2.Number)
 	}
@@ -226,10 +227,11 @@ func TestSnapshot_Apply_VoteAddSigner(t *testing.T) {
 	// k2 signs block 2 with vote for candidate (k1 is now in recents, so k2 must sign).
 	h2 := makeHeader(t, 2, h1, k2, snap1, plainExtra(),
 		&voteOpt{address: addr(candidate), authorize: true})
-	snap2, err := engine.Apply(snap1, []*types.Header{h2})
+	snap2raw, err := engine.Apply(snap1, []*types.Header{h2})
 	if err != nil {
 		t.Fatalf("Apply block 2: %v", err)
 	}
+	snap2 := asSnap(snap2raw)
 	if !snap2.IsAuthorized(addr(candidate)) {
 		t.Error("candidate should be authorized after majority vote")
 	}
@@ -265,10 +267,11 @@ func TestSnapshot_Apply_VoteRemoveSigner(t *testing.T) {
 	// k2 votes to remove k3 (block 2) → majority reached.
 	h2 := makeHeader(t, 2, h1, k2, snap1, plainExtra(),
 		&voteOpt{address: addr(k3), authorize: false})
-	snap2, err := engine.Apply(snap1, []*types.Header{h2})
+	snap2raw, err := engine.Apply(snap1, []*types.Header{h2})
 	if err != nil {
 		t.Fatalf("Apply block 2: %v", err)
 	}
+	snap2 := asSnap(snap2raw)
 	if snap2.IsAuthorized(addr(k3)) {
 		t.Error("k3 should be deauthorized after majority vote")
 	}
@@ -324,12 +327,13 @@ func TestSnapshot_Apply_EpochResetsVotes(t *testing.T) {
 	snap.Number = 4
 	snap.Recents = map[uint64]common.Address{}
 
-	snap5, err := engine.Apply(snap, []*types.Header{h5})
+	snap5raw, err := engine.Apply(snap, []*types.Header{h5})
 	if err != nil {
 		t.Fatalf("Apply epoch block: %v", err)
 	}
-	if len(snap5.Votes) != 0 {
-		t.Errorf("votes should be reset at epoch, got %d", len(snap5.Votes))
+	snap5 := asSnap(snap5raw)
+	if len(snap5.PendingVotes()) != 0 {
+		t.Errorf("votes should be reset at epoch, got %d", len(snap5.PendingVotes()))
 	}
 	if len(snap5.Tally) != 0 {
 		t.Errorf("tally should be reset at epoch, got %d", len(snap5.Tally))
@@ -382,4 +386,3 @@ func TestSnapshot_Copy_IsIndependent(t *testing.T) {
 		t.Error("original Tally was mutated")
 	}
 }
-

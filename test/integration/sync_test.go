@@ -109,9 +109,9 @@ func TestSync_FollowerCatchesUp(t *testing.T) {
 	cfg1.P2P.MaxPeers = 10
 	cfg1.P2P.BootNodes = nil
 	cfg1.RPC.ListenAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	cfg1.Clique.SignerKeyPath = signerKeyPath
-	cfg1.Clique.Period = period
-	cfg1.Clique.Epoch = 30000
+	cfg1.Consensus.Clique.SignerKeyPath = signerKeyPath
+	cfg1.Consensus.Clique.Period = period
+	cfg1.Consensus.Clique.Epoch = 30000
 	node1, err := node.New(cfg1)
 	if err != nil {
 		t.Fatal("create node-1:", err)
@@ -161,9 +161,9 @@ func TestSync_FollowerCatchesUp(t *testing.T) {
 	cfg2.P2P.MaxPeers = 10
 	cfg2.P2P.BootNodes = []string{node1Addr}
 	cfg2.RPC.ListenAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	cfg2.Clique.SignerKeyPath = "" // no signer key → follower
-	cfg2.Clique.Period = period
-	cfg2.Clique.Epoch = 30000
+	cfg2.Consensus.Clique.SignerKeyPath = "" // no signer key → follower
+	cfg2.Consensus.Clique.Period = period
+	cfg2.Consensus.Clique.Epoch = 30000
 	node2, err := node.New(cfg2)
 	if err != nil {
 		t.Fatal("create node-2:", err)

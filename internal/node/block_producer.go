@@ -11,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	p2phost "github.com/peterrobinson/consensus-client-vibe/internal/p2p"
 )
@@ -66,7 +66,7 @@ func (n *Node) scheduleBlockProduction(ctx context.Context) {
 
 	// Base firing time: parent.Time + period.
 	baseTime := time.Unix(int64(head.Time), 0).Add(
-		time.Duration(n.cfg.Clique.Period) * time.Second)
+		time.Duration(n.cliq.Period()) * time.Second)
 
 	var delay time.Duration
 	if dist == 0 {
@@ -159,13 +159,13 @@ func (n *Node) produceBlock(ctx context.Context) {
 	if snap.HasRecentlySigned(nextNum, n.signerAddr) {
 		n.log.Debug().Msg("produceBlock: signed recently, skipping")
 		n.log.Debug().
-      		Str("signer", n.signerAddr.Hex()).
-      		Uint64("value", nextNum).
-      		Msg("produceBlock: signed recently")          
+			Str("signer", n.signerAddr.Hex()).
+			Uint64("value", nextNum).
+			Msg("produceBlock: signed recently")
 		return
 	}
 
-	targetTime := head.Time + n.cfg.Clique.Period
+	targetTime := head.Time + n.cliq.Period()
 	// Don't produce significantly before the target time.
 	if uint64(time.Now().Unix())+1 < targetTime {
 		n.log.Debug().
@@ -187,7 +187,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	// clExtra is the full Clique Extra for the CL header: vanity + optional
 	// epoch signer list + 65-byte seal placeholder (filled by SealHeader).
 	// The seal lives in the CL header only; peers recover the signer from it.
-	elExtra := make([]byte, cliqueeng.ExtraVanity)
+	elExtra := make([]byte, n.cliq.ExtraVanity())
 	clExtra := n.buildExtra(snap, nextNum)
 
 	zeroHash := common.Hash{}
@@ -259,7 +259,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	if ep.BaseFeePerGas != nil {
 		baseFee = ep.BaseFeePerGas.ToInt()
 	}
-	nonce := cliqueeng.NonceDrop
+	nonce := n.cliq.NonceDrop()
 	coinbase := common.Address{} // zero address = no vote; using signerAddr here would be a drop-vote for our own key
 
 	// Apply pending vote if one was set via POST /clique/v1/vote.
@@ -267,7 +267,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 		if vote := n.rpc.PendingVote(); vote != nil {
 			coinbase = vote.Address
 			if vote.Authorize {
-				nonce = cliqueeng.NonceAuth
+				nonce = n.cliq.NonceAuth()
 			}
 		}
 	}
@@ -278,7 +278,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	// (which ForkchoiceState now returns as the EL hash).
 	header := &types.Header{
 		ParentHash:  head.Hash(),
-		UncleHash:   cliqueeng.EmptyUncleHash,
+		UncleHash:   n.cliq.EmptyUncleHash(),
 		Coinbase:    coinbase,
 		Root:        ep.StateRoot,
 		ReceiptHash: ep.ReceiptsRoot,
@@ -297,7 +297,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	// Step 5: Seal the CL header (writes 65-byte ECDSA signature into Extra).
 	// The EL execution payload (ep) is not modified — it keeps the 32-byte
 	// elExtra and its own block hash (ep.BlockHash) from Geth.
-	if err := cliqueeng.SealHeader(header, n.signerKey); err != nil {
+	if err := n.cliq.SealHeader(header, n.signerKey); err != nil {
 		n.log.Error().Err(err).Msg("produceBlock: SealHeader failed")
 		return
 	}
@@ -351,7 +351,7 @@ func (n *Node) produceBlock(ctx context.Context) {
 	if n.p2p != nil {
 		n.p2p.SetStatus(p2phost.StatusMsg{
 			NetworkID:   n.cfg.Node.NetworkID,
-			GenesisHash: n.genesisSnap.Hash,
+			GenesisHash: n.genesisSnap.BlockHash(),
 			HeadHash:    blockHash,
 			HeadNumber:  nextNum,
 		})
@@ -369,13 +369,13 @@ func (n *Node) produceBlock(ctx context.Context) {
 // buildExtra constructs the Extra field for the next Clique block.
 // At epoch boundaries, the signer list is embedded after the vanity bytes.
 // The last ExtraSeal bytes are zero-padded (to be filled in by SealHeader).
-func (n *Node) buildExtra(snap *cliqueeng.Snapshot, nextNum uint64) []byte {
-	extra := make([]byte, cliqueeng.ExtraVanity) // 32 zero vanity bytes
-	if nextNum%n.cfg.Clique.Epoch == 0 {
+func (n *Node) buildExtra(snap consensus.Snapshot, nextNum uint64) []byte {
+	extra := make([]byte, n.cliq.ExtraVanity()) // 32 zero vanity bytes
+	if nextNum%n.cliq.Epoch() == 0 {
 		for _, addr := range snap.SignerList() {
 			extra = append(extra, addr.Bytes()...)
 		}
 	}
-	extra = append(extra, make([]byte, cliqueeng.ExtraSeal)...) // 65 zero seal bytes
+	extra = append(extra, make([]byte, n.cliq.ExtraSeal())...) // 65 zero seal bytes
 	return extra
 }

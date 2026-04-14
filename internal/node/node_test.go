@@ -12,8 +12,10 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
+	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 
-	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
+	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/consensus/clique"
 	"github.com/peterrobinson/consensus-client-vibe/internal/config"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	"github.com/peterrobinson/consensus-client-vibe/internal/forkchoice"
@@ -119,20 +121,20 @@ func makeGenesisHeader(signers []common.Address) *types.Header {
 func nodeForTest(t *testing.T, genesis *types.Header, signerKey *ecdsa.PrivateKey, eng EngineAPI) *Node {
 	t.Helper()
 
-	genesisSnap, err := cliqueeng.NewGenesisSnapshot(genesis)
+	cliq := cliqueeng.New(15, 100)
+	genesisSnap, err := cliq.NewGenesisSnapshot(genesis)
 	if err != nil {
 		t.Fatalf("genesis snapshot: %v", err)
 	}
 
 	cfg := &config.Config{
-		Node:   config.NodeConfig{NetworkID: 1},
-		Clique: config.CliqueConfig{Period: 15, Epoch: 100},
-		P2P:    config.P2PConfig{ListenAddr: "/ip4/127.0.0.1/tcp/0"},
-		RPC:    config.RPCConfig{},
+		Node:      config.NodeConfig{NetworkID: 1},
+		Consensus: config.ConsensusConfig{Clique: config.CliqueConfig{Period: 15, Epoch: 100}},
+		P2P:       config.P2PConfig{ListenAddr: "/ip4/127.0.0.1/tcp/0"},
+		RPC:       config.RPCConfig{},
 	}
 
-	stor := forkchoice.New(genesis, cfg.Clique.Epoch)
-	cliq := cliqueeng.New(cfg.Clique.Period, cfg.Clique.Epoch)
+	stor := forkchoice.New(genesis, cliq.Epoch())
 
 	var signerAddr common.Address
 	if signerKey != nil {
@@ -148,7 +150,7 @@ func nodeForTest(t *testing.T, genesis *types.Header, signerKey *ecdsa.PrivateKe
 		signerAddr:  signerAddr,
 		genesisSnap: genesisSnap,
 		headSnap:    genesisSnap,
-		epochSnaps:  make(map[uint64]*cliqueeng.Snapshot),
+		epochSnaps:  make(map[uint64]consensus.Snapshot),
 		log:         log.With("test-node"),
 	}
 	return n
@@ -258,7 +260,7 @@ func TestHandleBlock_UnknownParent(t *testing.T) {
 	blk, _ := p2phost.NewCliqueBlock(orphan, engine.ExecutionPayloadV3{})
 	initialLen := n.stor.Len()
 
-	n.handleBlock(ctx, blk)
+	n.handleBlock(ctx, libp2ppeer.ID(""), blk)
 
 	if n.stor.Len() != initialLen {
 		t.Error("store should not grow when parent is unknown")
@@ -293,7 +295,7 @@ func TestHandleBlock_Valid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n.handleBlock(ctx, blk)
+	n.handleBlock(ctx, libp2ppeer.ID(""), blk)
 
 	// Block should now be in the store and be the new head.
 	if n.stor.Len() != 2 { // genesis + block 1
@@ -337,7 +339,7 @@ func TestHandleBlock_InvalidSignature(t *testing.T) {
 	}
 
 	blk, _ := p2phost.NewCliqueBlock(h, engine.ExecutionPayloadV3{BlockHash: h.Hash()})
-	n.handleBlock(ctx, blk)
+	n.handleBlock(ctx, libp2ppeer.ID(""), blk)
 
 	// Block should NOT be in the store.
 	if n.stor.Len() != 1 {
@@ -352,7 +354,7 @@ func TestBuildExtra_NonEpoch(t *testing.T) {
 	genesis := makeGenesisHeader([]common.Address{gethcrypto.PubkeyToAddress(key.PublicKey)})
 	n := nodeForTest(t, genesis, key, &mockEngine{})
 
-	snap, _ := cliqueeng.NewGenesisSnapshot(genesis)
+	snap, _ := n.cliq.NewGenesisSnapshot(genesis)
 	extra := n.buildExtra(snap, 1) // block 1 is not an epoch block
 
 	wantLen := cliqueeng.ExtraVanity + cliqueeng.ExtraSeal
@@ -365,13 +367,10 @@ func TestBuildExtra_Epoch(t *testing.T) {
 	key := testKey(t)
 	signerAddr := gethcrypto.PubkeyToAddress(key.PublicKey)
 	genesis := makeGenesisHeader([]common.Address{signerAddr})
-	cfg := &config.Config{
-		Clique: config.CliqueConfig{Period: 15, Epoch: 5},
-	}
 	n := nodeForTest(t, genesis, key, &mockEngine{})
-	n.cfg = cfg
+	n.cliq = cliqueeng.New(15, 5) // override with epoch=5
 
-	snap, _ := cliqueeng.NewGenesisSnapshot(genesis)
+	snap, _ := n.cliq.NewGenesisSnapshot(genesis)
 	extra := n.buildExtra(snap, 5) // block 5 = epoch boundary (epoch=5)
 
 	// ExtraVanity + 1×20 bytes (one signer) + ExtraSeal

@@ -10,12 +10,12 @@ import (
 
 // Config is the top-level configuration for the clique-node.
 type Config struct {
-	Node    NodeConfig    `toml:"node"`
-	Engine  EngineConfig  `toml:"engine"`
-	P2P     P2PConfig     `toml:"p2p"`
-	RPC     RPCConfig     `toml:"rpc"`
-	Clique  CliqueConfig  `toml:"clique"`
-	Logging LoggingConfig `toml:"logging"`
+	Node      NodeConfig      `toml:"node"`
+	Engine    EngineConfig    `toml:"engine"`
+	P2P       P2PConfig       `toml:"p2p"`
+	RPC       RPCConfig       `toml:"rpc"`
+	Consensus ConsensusConfig `toml:"consensus"`
+	Logging   LoggingConfig   `toml:"logging"`
 }
 
 // NodeConfig holds general node settings.
@@ -61,6 +61,14 @@ type RPCConfig struct {
 	ReadTimeout duration `toml:"read_timeout"`
 	// WriteTimeout is the HTTP write timeout.
 	WriteTimeout duration `toml:"write_timeout"`
+}
+
+// ConsensusConfig selects the consensus mechanism and holds its parameters.
+type ConsensusConfig struct {
+	// Type is the consensus mechanism to use. Currently only "clique" is supported.
+	// Defaults to "clique" when empty.
+	Type   string       `toml:"type"`
+	Clique CliqueConfig `toml:"clique"`
 }
 
 // CliqueConfig holds Clique consensus parameters.
@@ -120,9 +128,12 @@ func DefaultConfig() *Config {
 			ReadTimeout:  duration{10 * time.Second},
 			WriteTimeout: duration{10 * time.Second},
 		},
-		Clique: CliqueConfig{
-			Period: 15,
-			Epoch:  30000,
+		Consensus: ConsensusConfig{
+			Type: "clique",
+			Clique: CliqueConfig{
+				Period: 15,
+				Epoch:  30000,
+			},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -159,8 +170,8 @@ func (c *Config) Validate() error {
 	if c.Engine.JWTSecretPath == "" {
 		return fmt.Errorf("engine.jwt_secret_path must be set")
 	}
-	if c.Clique.Epoch == 0 {
-		return fmt.Errorf("clique.epoch must be > 0")
+	if c.Consensus.Clique.Epoch == 0 {
+		return fmt.Errorf("consensus.clique.epoch must be > 0")
 	}
 	if c.P2P.MaxPeers <= 0 {
 		return fmt.Errorf("p2p.max_peers must be > 0")

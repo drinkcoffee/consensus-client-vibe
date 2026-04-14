@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 
-	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	"github.com/peterrobinson/consensus-client-vibe/internal/forkchoice"
 	p2phost "github.com/peterrobinson/consensus-client-vibe/internal/p2p"
@@ -60,7 +60,7 @@ func (n *Node) replayChain(db *forkchoice.ChainDB) {
 	if n.p2p != nil {
 		n.p2p.SetStatus(p2phost.StatusMsg{
 			NetworkID:   n.cfg.Node.NetworkID,
-			GenesisHash: n.genesisSnap.Hash,
+			GenesisHash: n.genesisSnap.BlockHash(),
 			HeadHash:    head.Hash(),
 			HeadNumber:  head.Number.Uint64(),
 		})
@@ -149,7 +149,7 @@ func (n *Node) syncWithPeer(pid libp2ppeer.ID) {
 	if n.p2p != nil {
 		n.p2p.SetStatus(p2phost.StatusMsg{
 			NetworkID:   n.cfg.Node.NetworkID,
-			GenesisHash: n.genesisSnap.Hash,
+			GenesisHash: n.genesisSnap.BlockHash(),
 			HeadHash:    head.Hash(),
 			HeadNumber:  head.Number.Uint64(),
 		})
@@ -175,7 +175,7 @@ func (n *Node) resetChain() error {
 	n.stor.Reset(n.genesisHeader)
 	n.mu.Lock()
 	n.headSnap = n.genesisSnap
-	n.epochSnaps = make(map[uint64]*cliqueeng.Snapshot)
+	n.epochSnaps = make(map[uint64]consensus.Snapshot)
 	n.mu.Unlock()
 	return nil
 }

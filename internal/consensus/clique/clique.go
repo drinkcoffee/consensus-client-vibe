@@ -10,7 +10,7 @@
 //   - Difficulty calculation (CalcDifficulty)
 //
 // The package does NOT manage a chain or a snapshot cache; those concerns
-// belong to the node orchestrator (Phase 4 fork choice).
+// belong to the node orchestrator.
 package clique
 
 import (
@@ -20,6 +20,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 )
 
 // Extra-data field layout (EIP-225):
@@ -113,7 +115,7 @@ func (e *Engine) Epoch() uint64 { return e.epoch }
 // CalcDifficulty returns the expected block difficulty for signer at the given
 // block number: diffInTurn (2) when it is their designated turn, diffNoTurn (1)
 // otherwise.
-func (e *Engine) CalcDifficulty(snap *Snapshot, number uint64, signer common.Address) *big.Int {
+func (e *Engine) CalcDifficulty(snap consensus.Snapshot, number uint64, signer common.Address) *big.Int {
 	if snap.InTurn(number, signer) {
 		return big.NewInt(diffInTurn)
 	}
@@ -121,9 +123,13 @@ func (e *Engine) CalcDifficulty(snap *Snapshot, number uint64, signer common.Add
 }
 
 // Apply creates a new snapshot by replaying headers on top of snap. The headers
-// must be consecutive blocks starting immediately after snap.Number.
-func (e *Engine) Apply(snap *Snapshot, headers []*types.Header) (*Snapshot, error) {
-	return snap.apply(headers, e.epoch)
+// must be consecutive blocks starting immediately after snap.BlockNumber().
+func (e *Engine) Apply(snap consensus.Snapshot, headers []*types.Header) (consensus.Snapshot, error) {
+	s, ok := snap.(*Snapshot)
+	if !ok {
+		return nil, fmt.Errorf("clique: Apply requires a *Snapshot, got %T", snap)
+	}
+	return s.apply(headers, e.epoch)
 }
 
 // VerifyHeader checks that header conforms to the Clique rules given the
@@ -141,7 +147,7 @@ func (e *Engine) Apply(snap *Snapshot, headers []*types.Header) (*Snapshot, erro
 //
 // parent may be nil only for genesis (number 0), which should not be passed
 // to this function in normal operation.
-func (e *Engine) VerifyHeader(snap *Snapshot, header *types.Header, parent *types.Header) error {
+func (e *Engine) VerifyHeader(snap consensus.Snapshot, header *types.Header, parent *types.Header) error {
 	number := header.Number.Uint64()
 
 	// 1. Extra data length.

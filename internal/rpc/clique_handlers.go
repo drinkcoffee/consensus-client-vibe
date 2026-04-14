@@ -9,7 +9,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
+	clique "github.com/peterrobinson/consensus-client-vibe/internal/consensus/clique"
 )
 
 // handleCliqueHead serves GET /clique/v1/head.
@@ -99,8 +100,9 @@ func (s *Server) handleCliqueVotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	votes := make([]VoteInfo, len(snap.Votes))
-	for i, v := range snap.Votes {
+	pending := snap.PendingVotes()
+	votes := make([]VoteInfo, len(pending))
+	for i, v := range pending {
 		votes[i] = VoteInfo{
 			Signer:    v.Signer.Hex(),
 			Address:   v.Address.Hex(),
@@ -155,8 +157,8 @@ func (s *Server) handleCliqueVote(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
-// headSnapshot returns the Clique snapshot at the current head, or nil.
-func (s *Server) headSnapshot() *clique.Snapshot {
+// headSnapshot returns the consensus snapshot at the current head, or nil.
+func (s *Server) headSnapshot() consensus.Snapshot {
 	if s.snap == nil {
 		return nil
 	}

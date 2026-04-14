@@ -13,7 +13,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
+	clique "github.com/peterrobinson/consensus-client-vibe/internal/consensus/clique"
 	"github.com/peterrobinson/consensus-client-vibe/internal/config"
 )
 
@@ -319,7 +320,7 @@ func TestCliqueValidators_WithSnapshot(t *testing.T) {
 		Recents: map[uint64]common.Address{},
 		Tally:   map[common.Address]clique.Tally{},
 	}
-	snapFn := func() *clique.Snapshot { return snap }
+	snapFn := func() consensus.Snapshot { return snap }
 	ts := newTestServer(t, p2p, chain, snapFn)
 
 	var body struct {
@@ -414,7 +415,7 @@ func TestCliqueVotes_WithVotes(t *testing.T) {
 			{Signer: signer, Address: target, Authorize: true, Block: 3},
 		},
 	}
-	ts := newTestServer(t, p2p, chain, func() *clique.Snapshot { return snap })
+	ts := newTestServer(t, p2p, chain, func() consensus.Snapshot { return snap })
 
 	var body struct {
 		Data []VoteInfo `json:"data"`

@@ -23,7 +23,8 @@ import (
 	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog"
 
-	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
+	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/consensus/clique"
 	"github.com/peterrobinson/consensus-client-vibe/internal/config"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	"github.com/peterrobinson/consensus-client-vibe/internal/forkchoice"
@@ -48,7 +49,7 @@ type Node struct {
 	eng  EngineAPI
 	p2p  *p2phost.Host
 	stor *forkchoice.Store
-	cliq *cliqueeng.Engine
+	cliq consensus.Engine
 	rpc  *rpc.Server
 
 	signerKey  *ecdsa.PrivateKey // nil in follower mode
@@ -61,13 +62,13 @@ type Node struct {
 	// db is the on-disk chain journal. Nil when no data directory is configured.
 	db *forkchoice.ChainDB
 
-	// Clique snapshot cache. genesisSnap is the baseline. headSnap is the
+	// Consensus snapshot cache. genesisSnap is the baseline. headSnap is the
 	// snapshot at the current canonical head. epochSnaps caches epoch-
 	// boundary snapshots to avoid replaying from genesis on every reorg.
 	mu          sync.RWMutex
-	genesisSnap *cliqueeng.Snapshot
-	headSnap    *cliqueeng.Snapshot
-	epochSnaps  map[uint64]*cliqueeng.Snapshot // epoch start block number → snapshot
+	genesisSnap consensus.Snapshot
+	headSnap    consensus.Snapshot
+	epochSnaps  map[uint64]consensus.Snapshot // epoch start block number → snapshot
 
 	// Block production timer.
 	prodMu    sync.Mutex
@@ -93,15 +94,15 @@ type timerCancel struct {
 
 // New creates a Node and initialises all subsystems. It connects to the
 // execution client to fetch the genesis block, then wires the Engine API
-// client, P2P host, fork-choice store, Clique engine, and RPC server.
+// client, P2P host, fork-choice store, consensus engine, and RPC server.
 func New(cfg *config.Config) (*Node, error) {
 	logger := log.With("node")
 
 	// --- Signer key ---
 	var signerKey *ecdsa.PrivateKey
 	var signerAddr common.Address
-	if cfg.Clique.SignerKeyPath != "" {
-		k, err := loadSignerKey(cfg.Clique.SignerKeyPath)
+	if cfg.Consensus.Clique.SignerKeyPath != "" {
+		k, err := loadSignerKey(cfg.Consensus.Clique.SignerKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("load signer key: %w", err)
 		}
@@ -136,15 +137,23 @@ func New(cfg *config.Config) (*Node, error) {
 		Str("hash", genesisHeader.Hash().Hex()).
 		Msg("genesis block loaded from EL")
 
+	// --- Consensus engine (currently only "clique" is supported) ---
+	var cliq consensus.Engine
+	switch cfg.Consensus.Type {
+	case "", "clique":
+		cliq = cliqueeng.New(cfg.Consensus.Clique.Period, cfg.Consensus.Clique.Epoch)
+	default:
+		return nil, fmt.Errorf("unsupported consensus type %q", cfg.Consensus.Type)
+	}
+
 	// --- Genesis snapshot ---
-	genesisSnap, err := cliqueeng.NewGenesisSnapshot(genesisHeader)
+	genesisSnap, err := cliq.NewGenesisSnapshot(genesisHeader)
 	if err != nil {
 		return nil, fmt.Errorf("init genesis snapshot: %w", err)
 	}
 
 	// --- Subsystems ---
-	stor := forkchoice.New(genesisHeader, cfg.Clique.Epoch)
-	cliq := cliqueeng.New(cfg.Clique.Period, cfg.Clique.Epoch)
+	stor := forkchoice.New(genesisHeader, cliq.Epoch())
 
 	genesisHash := genesisHeader.Hash()
 	p2pH, err := p2phost.New(&cfg.P2P, p2phost.StatusMsg{
@@ -168,7 +177,7 @@ func New(cfg *config.Config) (*Node, error) {
 		genesisHeader: genesisHeader,
 		genesisSnap:   genesisSnap,
 		headSnap:      genesisSnap,
-		epochSnaps:    make(map[uint64]*cliqueeng.Snapshot),
+		epochSnaps:    make(map[uint64]consensus.Snapshot),
 		log:           logger,
 	}
 
@@ -185,7 +194,7 @@ func New(cfg *config.Config) (*Node, error) {
 	}
 
 	// RPC server wired to live node state via closures.
-	n.rpc = rpc.New(&cfg.RPC, p2pH, stor, func() *cliqueeng.Snapshot {
+	n.rpc = rpc.New(&cfg.RPC, p2pH, stor, func() consensus.Snapshot {
 		n.mu.RLock()
 		defer n.mu.RUnlock()
 		return n.headSnap
@@ -208,8 +217,8 @@ func (n *Node) Start(ctx context.Context) error {
 	n.log.Info().Strs("capabilities", caps).Msg("engine API handshake OK")
 
 	// 2. Register the P2P block and sync handlers, then start the host.
-	n.p2p.SetBlockHandler(func(_ libp2ppeer.ID, blk *p2phost.CliqueBlock) {
-		n.handleBlock(ctx, blk)
+	n.p2p.SetBlockHandler(func(from libp2ppeer.ID, blk *p2phost.CliqueBlock) {
+		n.handleBlock(ctx, from, blk)
 	})
 	n.p2p.SetSyncProvider(n.handleSyncRequest)
 	n.p2p.SetSyncHandler(n.syncWithPeer)
@@ -297,39 +306,40 @@ func (n *Node) P2PAddr() string {
 
 // --- Snapshot management ---
 
-// headSnapshot returns the Clique snapshot at the current canonical head.
-func (n *Node) headSnapshot() *cliqueeng.Snapshot {
+// headSnapshot returns the consensus snapshot at the current canonical head.
+func (n *Node) headSnapshot() consensus.Snapshot {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.headSnap
 }
 
 // setHeadSnapshot updates the head snapshot and caches it at epoch boundaries.
-func (n *Node) setHeadSnapshot(snap *cliqueeng.Snapshot) {
+func (n *Node) setHeadSnapshot(snap consensus.Snapshot) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.headSnap = snap
 	// Cache epoch-boundary snapshots for efficient reorg recovery.
-	if snap.Number%n.cfg.Clique.Epoch == 0 {
-		n.epochSnaps[snap.Number] = snap
+	if snap.BlockNumber()%n.cliq.Epoch() == 0 {
+		n.epochSnaps[snap.BlockNumber()] = snap
 	}
 }
 
-// computeSnapshot returns the Clique snapshot at the given header by
+// computeSnapshot returns the consensus snapshot at the given header by
 // advancing from the nearest cached epoch checkpoint.
-func (n *Node) computeSnapshot(header *types.Header) (*cliqueeng.Snapshot, error) {
+func (n *Node) computeSnapshot(header *types.Header) (consensus.Snapshot, error) {
 	num := header.Number.Uint64()
 
 	// Fast path: extending the current head by one block.
 	n.mu.RLock()
 	cur := n.headSnap
 	n.mu.RUnlock()
-	if cur != nil && cur.Number+1 == num && cur.Hash == header.ParentHash {
+	if cur != nil && cur.BlockNumber()+1 == num && cur.BlockHash() == header.ParentHash {
 		return n.cliq.Apply(cur, []*types.Header{header})
 	}
 
 	// General path: start from the nearest epoch checkpoint ≤ num.
-	epochStart := (num / n.cfg.Clique.Epoch) * n.cfg.Clique.Epoch
+	epoch := n.cliq.Epoch()
+	epochStart := (num / epoch) * epoch
 
 	n.mu.RLock()
 	base, ok := n.epochSnaps[epochStart]
@@ -344,7 +354,7 @@ func (n *Node) computeSnapshot(header *types.Header) (*cliqueeng.Snapshot, error
 				return nil, fmt.Errorf("epoch header at %d not in store", epochStart)
 			}
 			var err error
-			base, err = cliqueeng.NewCheckpointSnapshot(epochHeader)
+			base, err = n.cliq.NewCheckpointSnapshot(epochHeader)
 			if err != nil {
 				return nil, fmt.Errorf("build epoch snapshot at %d: %w", epochStart, err)
 			}

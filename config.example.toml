@@ -35,7 +35,11 @@ listen_addr = "0.0.0.0:5052"
 read_timeout  = "10s"
 write_timeout = "10s"
 
-[clique]
+[consensus]
+# Consensus mechanism to use. Currently only "clique" is supported.
+type = "clique"
+
+[consensus.clique]
 # Path to the hex-encoded ECDSA private key used to sign blocks.
 # Omit or leave empty to run in follower (non-signing) mode.
 signer_key_path = "./signer.hex"

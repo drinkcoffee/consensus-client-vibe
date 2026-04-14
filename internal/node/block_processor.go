@@ -6,8 +6,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 
-	cliqueeng "github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 	"github.com/peterrobinson/consensus-client-vibe/internal/engine"
 	p2phost "github.com/peterrobinson/consensus-client-vibe/internal/p2p"
 )
@@ -23,7 +24,7 @@ import (
 //  6. If the head changed, notify the execution client via engine_forkchoiceUpdated.
 //  7. Update the local head snapshot.
 //  8. Reschedule block production for the new head.
-func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
+func (n *Node) handleBlock(ctx context.Context, from libp2ppeer.ID, blk *p2phost.CliqueBlock) {
 	header, err := blk.DecodeHeader()
 	if err != nil {
 		n.log.Warn().Err(err).Msg("handleBlock: decode header failed")
@@ -53,7 +54,10 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 		n.log.Warn().
 			Uint64("number", num).
 			Str("parent", header.ParentHash.Hex()).
-			Msg("handleBlock: unknown parent, dropping block")
+			Msg("handleBlock: unknown parent, triggering sync")
+		if n.p2p != nil {
+			go n.syncWithPeer(from)
+		}
 		return
 	}
 
@@ -141,7 +145,7 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 	if n.p2p != nil {
 		n.p2p.SetStatus(p2phost.StatusMsg{
 			NetworkID:   n.cfg.Node.NetworkID,
-			GenesisHash: n.genesisSnap.Hash,
+			GenesisHash: n.genesisSnap.BlockHash(),
 			HeadHash:    hash,
 			HeadNumber:  num,
 		})
@@ -156,10 +160,10 @@ func (n *Node) handleBlock(ctx context.Context, blk *p2phost.CliqueBlock) {
 	n.scheduleBlockProduction(ctx)
 }
 
-// computeSnapshotAt returns the Clique snapshot at the given block (inclusive).
+// computeSnapshotAt returns the consensus snapshot at the given block (inclusive).
 // It is equivalent to computeSnapshot but accepts a header that is already
 // in the store. Used to get the snapshot AT a block (not after it).
-func (n *Node) computeSnapshotAt(header *types.Header) (*cliqueeng.Snapshot, error) {
+func (n *Node) computeSnapshotAt(header *types.Header) (consensus.Snapshot, error) {
 	num := header.Number.Uint64()
 
 	// Genesis snapshot is pre-computed.
@@ -171,7 +175,7 @@ func (n *Node) computeSnapshotAt(header *types.Header) (*cliqueeng.Snapshot, err
 	n.mu.RLock()
 	snap := n.headSnap
 	n.mu.RUnlock()
-	if snap != nil && snap.Number == num && snap.Hash == header.Hash() {
+	if snap != nil && snap.BlockNumber() == num && snap.BlockHash() == header.Hash() {
 		return snap, nil
 	}
 

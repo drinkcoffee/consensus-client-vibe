@@ -11,7 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/peterrobinson/consensus-client-vibe/internal/clique"
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 )
 
 // --- Dependency interfaces ---
@@ -31,9 +31,9 @@ type ChainState interface {
 	TD(hash common.Hash) (*big.Int, bool)
 }
 
-// SnapshotProvider returns the Clique signer-set snapshot at the current head.
+// SnapshotProvider returns the consensus signer-set snapshot at the current head.
 // Returns nil if the node has not yet processed any blocks.
-type SnapshotProvider func() *clique.Snapshot
+type SnapshotProvider func() consensus.Snapshot
 
 // --- JSON response/request types ---
 

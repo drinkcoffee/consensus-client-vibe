@@ -8,6 +8,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/peterrobinson/consensus-client-vibe/internal/consensus"
 )
 
 // testKey generates a fresh ECDSA key for use in a single test.
@@ -50,9 +52,7 @@ func plainExtra() []byte {
 //   - number is the block number.
 //   - parent is the parent header (may be nil for genesis-adjacent blocks).
 //   - key is the private key used to seal the header.
-//   - snap is used to determine correct difficulty.
-//   - inTurnOverride forces the difficulty to in-turn (2) if true, else out-of-turn (1).
-//     Pass a non-nil snap and set inTurnOverride to false to auto-detect.
+//   - snap is used to determine correct difficulty (may be nil).
 //   - extra is the pre-built extra-data slice (seal region must be zeroed).
 //   - vote, if non-nil, sets the coinbase and nonce for a vote.
 func makeHeader(
@@ -60,7 +60,7 @@ func makeHeader(
 	number uint64,
 	parent *types.Header,
 	key *ecdsa.PrivateKey,
-	snap *Snapshot,
+	snap consensus.Snapshot,
 	extra []byte,
 	vote *voteOpt,
 ) *types.Header {
@@ -125,4 +125,10 @@ func makeSnap(signers []common.Address) *Snapshot {
 		panic("makeSnap: " + err.Error())
 	}
 	return snap
+}
+
+// asSnap asserts that a consensus.Snapshot is a *Snapshot for direct field
+// access in tests. Panics if the assertion fails.
+func asSnap(s consensus.Snapshot) *Snapshot {
+	return s.(*Snapshot)
 }
