@@ -117,7 +117,12 @@ func (n *Node) runQBFTInstance(
 		timeout = 4 * time.Second
 	}
 
-	for round := uint32(0); ; round++ {
+	// prevResult carries the round-change certificate and any prepared block
+	// from the previous round, used by the next proposer.
+	var prevResult *qbftDecisionResult
+	var prevCore *qbftcore.Core
+
+	for round := uint32(0); ; {
 		select {
 		case <-ctx.Done():
 			return nil, nil, nil
@@ -126,7 +131,8 @@ func (n *Node) runQBFTInstance(
 
 		isProposer := n.signerKey != nil && n.isQBFTProposerForRound(snap, nextNum, round)
 
-		core := qbftcore.New(nextNum, validators, quorum, qbftcore.Config{
+		// Build the config for this round's core instance.
+		cfg := qbftcore.Config{
 			ProposalVerifier: func(h *types.Header) error {
 				return bftEng.VerifyProposal(snap, h, parent)
 			},
@@ -142,7 +148,22 @@ func (n *Node) runQBFTInstance(
 			CommitBlock: func(h *types.Header, seals [][]byte) (*types.Header, error) {
 				return bftEng.CommitBlock(h, seals)
 			},
-		})
+			RoundChangeSigVerifier: func(msgType uint8, data []byte, sig []byte) (common.Address, error) {
+				m := &p2phost.QBFTMsg{Type: msgType, Data: data, Sig: sig}
+				return recoverQBFTMsgSender(m)
+			},
+		}
+
+		core := qbftcore.New(nextNum, round, validators, quorum, cfg)
+
+		// Replay any backlogged proposals from the previous core that are
+		// addressed to this round. This recovers proposals that arrived while
+		// the node was finishing the previous round.
+		if prevCore != nil {
+			for _, backlogged := range prevCore.BacklogForRound(round) {
+				_ = core.HandleMsg(backlogged)
+			}
+		}
 
 		// Do NOT drain qbftMsgCh here. Messages for future or current rounds
 		// may already be sitting in the channel (e.g. a PROPOSAL from the new
@@ -156,19 +177,49 @@ func (n *Node) runQBFTInstance(
 		var builtPayload *engine.ExecutionPayloadV3
 
 		if isProposer {
-			h, ep, err := n.buildQBFTProposal(ctx, parent, snap, nextNum)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, nil, nil
+			var h *types.Header
+			var ep *engine.ExecutionPayloadV3
+			var err error
+
+			// For round > 0: reuse the prepared block from the round-change
+			// certificate if one exists (liveness requirement from the QBFT spec).
+			if round > 0 && prevResult != nil && prevResult.PreparedHeader != nil {
+				h, err = n.reuseQBFTPreparedHeader(prevResult.PreparedHeader, round)
+				if err != nil {
+					n.log.Warn().Err(err).Msg("qbft: reuse prepared header failed, building fresh")
+					h = nil
+				} else if len(prevResult.PreparedPayload) > 0 {
+					ep = new(engine.ExecutionPayloadV3)
+					if jsonErr := json.Unmarshal(prevResult.PreparedPayload, ep); jsonErr != nil {
+						n.log.Warn().Err(jsonErr).Msg("qbft: unmarshal prepared payload failed, building fresh")
+						h = nil
+						ep = nil
+					}
 				}
-				return nil, nil, fmt.Errorf("build proposal: %w", err)
 			}
+
+			if h == nil {
+				// No prepared block available — build a fresh proposal.
+				h, ep, err = n.buildQBFTProposal(ctx, parent, snap, nextNum)
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil, nil, nil
+					}
+					return nil, nil, fmt.Errorf("build proposal: %w", err)
+				}
+			}
+
 			payloadJSON, err := json.Marshal(ep)
 			if err != nil {
 				return nil, nil, fmt.Errorf("marshal payload: %w", err)
 			}
 			builtPayload = ep
-			initialDecisions = core.StartProposer(h, payloadJSON)
+
+			var rcc []qbftcore.SignedRoundChange
+			if prevResult != nil {
+				rcc = prevResult.RCC
+			}
+			initialDecisions = core.StartProposer(h, payloadJSON, rcc)
 		}
 
 		if len(initialDecisions) > 0 {
@@ -182,6 +233,12 @@ func (n *Node) runQBFTInstance(
 					payload = builtPayload
 				}
 				return result.CommittedHeader, payload, nil
+			}
+			if result != nil && result.StartRound {
+				prevResult = result
+				prevCore = core
+				round = result.NextRound
+				continue
 			}
 		}
 
@@ -199,9 +256,44 @@ func (n *Node) runQBFTInstance(
 		if result != nil && result.CommittedHeader != nil {
 			return result.CommittedHeader, result.CommittedPayload, nil
 		}
-		// StartRound: continue to next round iteration.
+		if result != nil && result.StartRound {
+			prevResult = result
+			prevCore = core
+			round = result.NextRound
+			continue
+		}
+		// Fallback: advance one round (should not happen in practice).
+		prevCore = core
+		round++
 		_ = builtPayload
 	}
+}
+
+// reuseQBFTPreparedHeader takes a prepared proposal header from a previous round
+// and re-seals it for the current round. The round number and proposer seal in
+// IstanbulExtra are updated; all other fields (Root, TxHash, etc.) are preserved.
+func (n *Node) reuseQBFTPreparedHeader(prepared *types.Header, newRound uint32) (*types.Header, error) {
+	qeng, ok := n.cliq.(*qbfteng.Engine)
+	if !ok {
+		return nil, fmt.Errorf("qbft: engine is not *qbft.Engine")
+	}
+	ie, err := qbfteng.DecodeExtra(prepared)
+	if err != nil {
+		return nil, fmt.Errorf("decode extra from prepared header: %w", err)
+	}
+	ie.Round = newRound
+	ie.Seal = nil
+	ie.CommittedSeals = nil
+	extra, err := qbfteng.EncodeExtra(prepared.Extra[:qbfteng.ExtraVanity], ie)
+	if err != nil {
+		return nil, fmt.Errorf("encode extra for new round: %w", err)
+	}
+	h := *prepared
+	h.Extra = extra
+	if err := qeng.SealHeader(&h, n.signerKey); err != nil {
+		return nil, fmt.Errorf("re-seal prepared header: %w", err)
+	}
+	return &h, nil
 }
 
 // qbftDecisionResult is returned by dispatchQBFTDecisions and qbftRoundLoop.
@@ -210,6 +302,16 @@ type qbftDecisionResult struct {
 	CommittedPayload *engine.ExecutionPayloadV3
 	// StartRound is true when the core returned a StartRound decision.
 	StartRound bool
+	// NextRound is the round to advance to (from the StartRound decision).
+	NextRound uint32
+	// PreparedHeader is the highest prepared header from the round-change
+	// certificate. Non-nil only when StartRound is true and some ROUND_CHANGE
+	// messages contained a prepared block.
+	PreparedHeader *types.Header
+	// PreparedPayload is the JSON execution payload for PreparedHeader.
+	PreparedPayload []byte
+	// RCC is the 2f+1 SignedRoundChange messages collected for the next round.
+	RCC []qbftcore.SignedRoundChange
 }
 
 // qbftRoundLoop runs the select loop for one round until a terminal decision
@@ -234,6 +336,7 @@ func (n *Node) qbftRoundLoop(
 				MsgType: qbftcore.MsgType(rawMsg.Type),
 				From:    from,
 				Data:    rawMsg.Data,
+				Sig:     rawMsg.Sig,
 			}
 			decisions := core.HandleMsg(incoming)
 			result, err := n.dispatchQBFTDecisions(ctx, decisions)
@@ -281,10 +384,13 @@ func (n *Node) dispatchQBFTDecisions(
 				n.log.Warn().Err(err).Msg("qbft: broadcast failed")
 			}
 			// Echo back to ourselves so our own messages are counted.
-			select {
-			case n.qbftMsgCh <- msg:
-			default:
-			}
+			// This must not be dropped: in a minimum-quorum network (e.g.
+			// 3 validators, quorum=3) the node's own vote is required to
+			// reach consensus. Use a blocking send; the channel is only
+			// read by the same goroutine via qbftRoundLoop, so this does
+			// not deadlock — we are inside dispatchQBFTDecisions which is
+			// called from qbftRoundLoop, not from within the select itself.
+			n.qbftMsgCh <- msg
 
 		case qbftcore.CommitBlock:
 			if d.Header == nil {
@@ -330,7 +436,13 @@ func (n *Node) dispatchQBFTDecisions(
 			}, nil
 
 		case qbftcore.StartRound:
-			return &qbftDecisionResult{StartRound: true}, nil
+			return &qbftDecisionResult{
+				StartRound:      true,
+				NextRound:       d.Round,
+				PreparedHeader:  d.PreparedHeader,
+				PreparedPayload: d.PreparedPayload,
+				RCC:             d.RCC,
+			}, nil
 		}
 	}
 	return nil, nil
